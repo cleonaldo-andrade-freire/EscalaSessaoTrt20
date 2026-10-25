@@ -26,7 +26,7 @@ PWA para organizar a escala dos técnicos que dão **Suporte PJe** às sessões 
 | Módulo | Rotas | Perfil |
 |---|---|---|
 | App do Membro | `/dashboard`, `/escalas-geral`, `/substituicoes`, `/avisos`, `/ausencias`, `/perfil` | Membro |
-| Painel Admin | `/admin/dashboard`, `/admin/escalas`, `/admin/membros`, `/admin/membros/novo`, `/admin/avisos`, `/admin/ausencias`, `/admin/permutas`, `/admin/relatorio-faltas` | Admin |
+| Painel Admin | `/admin/dashboard`, `/admin/escalas`, `/admin/membros`, `/admin/membros/novo`, `/admin/avisos`, `/admin/ausencias`, `/admin/permutas`, `/admin/relatorio-faltas`, `/admin/relatorio-presenca` | Admin |
 | Autenticação | `/login`, `/update-password` | Público |
 
 ## 4. Funcionalidades
@@ -73,6 +73,7 @@ Mantidas do sistema original: permuta simples (cobertura) e de mão dupla, com v
 | ADM-60 | Ausências programadas (somente leitura) |
 | ADM-70..76 | Permutas: filtros, registrar substituto, desfazer, check-in, excluir |
 | ADM-80 | Relatório de faltas por sessão e período |
+| ADM-85 | **Relatório de Presença** (`/admin/relatorio-presenca`): filtros por período, sessão e técnico; check-in, check-out, duração e quem registrou; resumo por técnico (sessões, presenças, faltas, sem check-out, horas); exportação CSV para Excel |
 
 > Exclusão de membro é bloqueada se ele tiver escalas (preserva o histórico de presença) — use "inativo".
 

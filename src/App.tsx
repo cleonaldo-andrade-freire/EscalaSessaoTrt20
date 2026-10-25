@@ -18,6 +18,7 @@ import MemberGeneralSchedule from './pages/member/MemberGeneralSchedule';
 import ManageAbsences from './pages/admin/ManageAbsences';
 import ManageSwaps from './pages/admin/ManageSwaps';
 import AdminMissedScales from './pages/admin/AdminMissedScales';
+import AttendanceReport from './pages/admin/AttendanceReport';
 import IosInstallBanner from './components/IosInstallBanner';
 
 // ---------------------------------------------------------------------------
@@ -100,6 +101,7 @@ function App() {
         <Route path="/admin/ausencias" element={<AdminRoute><ManageAbsences /></AdminRoute>} />
         <Route path="/admin/permutas" element={<AdminRoute><ManageSwaps /></AdminRoute>} />
         <Route path="/admin/relatorio-faltas" element={<AdminRoute><AdminMissedScales /></AdminRoute>} />
+        <Route path="/admin/relatorio-presenca" element={<AdminRoute><AttendanceReport /></AdminRoute>} />
 
         {/* Rotas de Membro (Mobile) — protegidas: exigem sessão */}
         <Route path="/dashboard" element={<ProtectedRoute><MemberDashboard /></ProtectedRoute>} />
