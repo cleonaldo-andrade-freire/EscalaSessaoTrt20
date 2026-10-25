@@ -93,7 +93,7 @@ const Login = () => {
     <div className="flex flex-col justify-center min-h-screen px-6 bg-gray-50 dark:bg-gray-700/50">
       <div className="w-full max-w-sm mx-auto">
         <div className="text-center mb-8">
-          <h1 className="text-3xl font-extrabold text-gray-900 dark:text-gray-50">Escala Sessões TRT20</h1>
+          <h1 className="text-3xl font-extrabold text-gray-900 dark:text-gray-50">Escala Sessão TRT20</h1>
           <p className="text-gray-500 dark:text-gray-400 mt-2">Escala de suporte às sessões do 2º Grau</p>
         </div>
 

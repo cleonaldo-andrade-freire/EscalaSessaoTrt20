@@ -1,5 +1,5 @@
 # SDD — Software Design Document
-# Escala Sessões TRT20
+# Escala Sessão TRT20
 
 > **Versão:** 2.0
 > **Data:** 2026-10-25

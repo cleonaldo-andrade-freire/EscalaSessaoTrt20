@@ -1,4 +1,4 @@
-# Escala Sessões TRT20
+# Escala Sessão TRT20
 
 PWA para a escala dos técnicos de **Suporte PJe** nas sessões do 2º Grau do TRT20
 (**1ª Turma**, **2ª Turma** e **Pleno**), com registro de **check-in** e **check-out**.

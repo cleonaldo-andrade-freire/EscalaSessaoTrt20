@@ -1,5 +1,5 @@
 # MEMORIA.md — Regras para Interações com IA
-# Escala Sessões TRT20
+# Escala Sessão TRT20
 
 > **Este documento é vinculante para qualquer IA que trabalhe neste projeto.**
 > **Versão:** 2.0 (adaptação para o TRT20)

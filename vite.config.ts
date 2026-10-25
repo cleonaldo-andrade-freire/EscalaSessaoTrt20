@@ -13,8 +13,8 @@ export default defineConfig(() => {
         registerType: 'autoUpdate',
         includeAssets: ['favicon.ico', 'apple-touch-icon.png'],
         manifest: {
-          name: 'Escala Sessões TRT20',
-          short_name: 'Escala TRT20',
+          name: 'Escala Sessão TRT20',
+          short_name: 'Escala Sessão TRT20',
           description: 'Escala dos técnicos de suporte PJe às sessões do 2º Grau do TRT20 (1ª Turma, 2ª Turma e Pleno).',
           theme_color: '#ffffff',
           background_color: '#ffffff',

@@ -1,4 +1,4 @@
-# PRD — Escala Sessões TRT20
+# PRD — Escala Sessão TRT20
 
 > **Versão:** 2.0 (adaptado do Sistema de Escalas de Mídia)
 > **Data:** 2026-10-25
