@@ -1,6 +1,10 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
-import { ChevronLeft, ChevronRight, X, Lock, Send, Trash2, Loader2, CalendarCheck, AlertTriangle } from 'lucide-react';
+import {
+  DndContext, DragOverlay, MouseSensor, TouchSensor, useSensor, useSensors, useDraggable, useDroppable,
+  type DragStartEvent, type DragEndEvent
+} from '@dnd-kit/core';
+import { ChevronLeft, ChevronRight, X, Lock, Send, Trash2, Loader2, CalendarCheck, AlertTriangle, ArrowRightLeft, MoveRight } from 'lucide-react';
 import { supabase } from '../services/supabaseClient';
 import { sendWhatsApp } from '../services/whatsappService';
 import { SESSOES_DISPONIVEIS, FUNCOES_DISPONIVEIS, LEMBRETE_ANTECEDENCIA_MIN } from '../constants';
@@ -13,6 +17,9 @@ import { negrito } from '../utils/mensagem';
 // (escalas.publicada = false), invisível para os técnicos e ignorada pelo
 // lembrete automático, até o admin publicar o mês — momento em que cada
 // técnico recebe um aviso (app e, opcionalmente, WhatsApp) com seus dias.
+// Uma marcação pode ser arrastada para outro dia: se o dia já tem a mesma
+// sessão, os dois técnicos trocam; senão, a escala só muda de dia. Mexer em
+// escala publicada pede confirmação e avisa os técnicos afetados.
 // ---------------------------------------------------------------------------
 
 interface MembroResumo {
@@ -29,7 +36,36 @@ interface EscalaMes {
   funcao: string;
   membro_original_id: string;
   publicada: boolean;
+  compareceu: boolean | null;
+  status_substituicao: string;
 }
+
+type Destino =
+  | { tipo: 'mesmo' }
+  | { tipo: 'bloqueado'; motivo: string }
+  | { tipo: 'mover' }
+  | { tipo: 'trocar'; alvo: EscalaMes };
+
+// Arrasto: só inicia após mover alguns pixels (mouse) ou segurar (toque),
+// para o clique no dia continuar marcando/desmarcando
+const Arrastavel: React.FC<{ id: string; disabled: boolean; children: React.ReactNode }> = ({ id, disabled, children }) => {
+  const { setNodeRef, listeners, attributes, isDragging } = useDraggable({ id, disabled });
+  return (
+    <span
+      ref={setNodeRef}
+      {...listeners}
+      {...attributes}
+      className={`block ${disabled ? '' : 'cursor-grab active:cursor-grabbing'} ${isDragging ? 'opacity-30' : ''}`}
+    >
+      {children}
+    </span>
+  );
+};
+
+const Soltavel: React.FC<{ id: string; children: (isOver: boolean, ref: (el: HTMLElement | null) => void) => React.ReactNode }> = ({ id, children }) => {
+  const { setNodeRef, isOver } = useDroppable({ id });
+  return <>{children(isOver, setNodeRef)}</>;
+};
 
 interface MonthlyScaleBuilderProps {
   mesInicial: string; // YYYY-MM
@@ -37,7 +73,10 @@ interface MonthlyScaleBuilderProps {
   onClose: () => void;
 }
 
-const CAMPOS_ESCALA = 'id, data, hora_inicio, tipo_sessao, funcao, membro_original_id, publicada';
+const CAMPOS_ESCALA = 'id, data, hora_inicio, tipo_sessao, funcao, membro_original_id, publicada, compareceu, status_substituicao';
+
+// Presença registrada ou troca em andamento: não pode ser arrastada
+const travada = (e: EscalaMes) => e.compareceu !== null || e.status_substituicao !== 'Nenhum';
 
 const CORES_SESSAO: Record<string, { chip: string; dot: string; tab: string }> = {
   '1ª Turma': { chip: 'bg-blue-900 text-white border-blue-300 dark:bg-blue-800 dark:border-blue-400', dot: 'bg-blue-900 dark:bg-blue-400', tab: 'bg-blue-900 text-white dark:bg-blue-700' },
@@ -74,6 +113,14 @@ const MonthlyScaleBuilder: React.FC<MonthlyScaleBuilderProps> = ({ mesInicial, m
   const [membroId, setMembroId] = useState('');
   const [horas, setHoras] = useState<Record<string, string>>({});
   const [visao, setVisao] = useState<'sessao' | 'todas'>('sessao');
+
+  const [arrastando, setArrastando] = useState<EscalaMes | null>(null);
+  const [movPendente, setMovPendente] = useState<{ origem: EscalaMes; data: string; alvo?: EscalaMes } | null>(null);
+  const arrastouRef = useRef(false);
+  const sensores = useSensors(
+    useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 8 } })
+  );
 
   const [escalas, setEscalas] = useState<EscalaMes[]>([]);
   const [ausencias, setAusencias] = useState<Record<string, Record<string, string>>>({});
@@ -175,15 +222,15 @@ const MonthlyScaleBuilder: React.FC<MonthlyScaleBuilderProps> = ({ mesInicial, m
   };
 
   const handleClickDia = async (data: string) => {
-    if (data < hoje || diasSalvando.has(data)) return;
+    if (arrastouRef.current || data < hoje || diasSalvando.has(data)) return;
 
     const atual = porSlot[`${data}|${sessao}|${funcao}`];
     if (atual?.publicada) {
-      toast('Esta escala já foi publicada. Para alterá-la, use "Editar Sessão".', { icon: '🔒' });
+      toast('Escala publicada: arraste-a para outro dia ou use "Editar Sessão".', { icon: '🔒' });
       return;
     }
     if (!membroId) {
-      toast.error('Escolha primeiro o técnico.');
+      toast.error('Para marcar dias, escolha um técnico acima. Para mover uma marcação, segure e arraste.');
       return;
     }
 
@@ -319,10 +366,152 @@ Bom trabalho!`;
     }
   };
 
+  // ---- Arrastar e soltar ----------------------------------------------------
+
+  const avaliarDestino = (origem: EscalaMes, data: string): Destino => {
+    if (data === origem.data) return { tipo: 'mesmo' };
+    if (data < hoje) return { tipo: 'bloqueado', motivo: 'Dia já passou' };
+
+    const motivoOrigem = ausencias[origem.membro_original_id]?.[data];
+    if (motivoOrigem) return { tipo: 'bloqueado', motivo: `${primeiroNome(nomeMembro(origem.membro_original_id))} ausente: ${motivoOrigem}` };
+
+    const alvo = porSlot[`${data}|${origem.tipo_sessao}|${origem.funcao}`];
+    if (!alvo) return { tipo: 'mover' };
+
+    if (travada(alvo)) return { tipo: 'bloqueado', motivo: `${primeiroNome(nomeMembro(alvo.membro_original_id))} já tem presença ou troca registrada` };
+    const motivoAlvo = ausencias[alvo.membro_original_id]?.[origem.data];
+    if (motivoAlvo) return { tipo: 'bloqueado', motivo: `${primeiroNome(nomeMembro(alvo.membro_original_id))} ausente em ${formatDiaCurto(origem.data)}: ${motivoAlvo}` };
+    return { tipo: 'trocar', alvo };
+  };
+
+  const handleDragStart = (ev: DragStartEvent) => {
+    setArrastando(escalas.find(e => e.id === ev.active.id) || null);
+  };
+
+  const handleDragEnd = (ev: DragEndEvent) => {
+    // Evita que o "click" disparado ao soltar marque/desmarque o dia
+    arrastouRef.current = true;
+    setTimeout(() => { arrastouRef.current = false; }, 50);
+
+    const origem = arrastando;
+    setArrastando(null);
+    if (!origem || !ev.over) return;
+
+    const data = String(ev.over.id);
+    const destino = avaliarDestino(origem, data);
+    if (destino.tipo === 'mesmo') return;
+    if (destino.tipo === 'bloqueado') {
+      toast.error(destino.motivo);
+      return;
+    }
+
+    const alvo = destino.tipo === 'trocar' ? destino.alvo : undefined;
+    if (origem.publicada || alvo?.publicada) {
+      setMovPendente({ origem, data, alvo });
+    } else {
+      aplicarMovimento(origem, data, alvo);
+    }
+  };
+
+  const mensagemMudanca = (membro: string, sessaoEsc: string, de: string, para: string, horaPara: string, trocaCom?: string) =>
+    `Olá, ${primeiroNome(nomeMembro(membro))}! 🔄
+
+Sua escala de suporte na sessão ${negrito(sessaoEsc)} foi alterada:
+de ${negrito(formatDiaCurto(de))} para ${negrito(formatDiaCurto(para))}, às ${negrito(horaPara.slice(0, 5))}${trocaCom ? ` (troca com ${nomeMembro(trocaCom)})` : ''}.
+
+Confira os detalhes no app.`;
+
+  // Move a escala para outro dia ou, havendo a mesma sessão no destino, troca
+  // os técnicos (cada um leva junto o status de publicada da sua escala).
+  const aplicarMovimento = async (origem: EscalaMes, data: string, alvo?: EscalaMes) => {
+    setProcessando(true);
+    marcarSalvando(origem.data, true);
+    marcarSalvando(data, true);
+    const avisar: { membro: string; texto: string }[] = [];
+    try {
+      if (!alvo) {
+        const { error } = await supabase.from('escalas').update({ data, lembrete_enviado_em: null }).eq('id', origem.id);
+        if (error) throw error;
+        setEscalas(prev => prev.map(e => (e.id === origem.id ? { ...e, data } : e)));
+        if (origem.publicada) {
+          avisar.push({ membro: origem.membro_original_id, texto: mensagemMudanca(origem.membro_original_id, origem.tipo_sessao, origem.data, data, origem.hora_inicio) });
+        }
+      } else {
+        const { error: e1 } = await supabase
+          .from('escalas')
+          .update({ membro_original_id: alvo.membro_original_id, publicada: alvo.publicada, lembrete_enviado_em: null })
+          .eq('id', origem.id);
+        if (e1) throw e1;
+        const { error: e2 } = await supabase
+          .from('escalas')
+          .update({ membro_original_id: origem.membro_original_id, publicada: origem.publicada, lembrete_enviado_em: null })
+          .eq('id', alvo.id);
+        if (e2) {
+          // Desfaz a primeira metade para não deixar o mesmo técnico nos dois dias
+          await supabase.from('escalas')
+            .update({ membro_original_id: origem.membro_original_id, publicada: origem.publicada })
+            .eq('id', origem.id);
+          throw e2;
+        }
+        setEscalas(prev => prev.map(e => {
+          if (e.id === origem.id) return { ...e, membro_original_id: alvo.membro_original_id, publicada: alvo.publicada };
+          if (e.id === alvo.id) return { ...e, membro_original_id: origem.membro_original_id, publicada: origem.publicada };
+          return e;
+        }));
+        if (origem.publicada) {
+          avisar.push({ membro: origem.membro_original_id, texto: mensagemMudanca(origem.membro_original_id, origem.tipo_sessao, origem.data, alvo.data, alvo.hora_inicio, alvo.membro_original_id) });
+        }
+        if (alvo.publicada) {
+          avisar.push({ membro: alvo.membro_original_id, texto: mensagemMudanca(alvo.membro_original_id, alvo.tipo_sessao, alvo.data, origem.data, origem.hora_inicio, origem.membro_original_id) });
+        }
+      }
+
+      if (avisar.length > 0) {
+        const { error: avisoError } = await supabase.from('avisos').insert(
+          avisar.map(a => ({ membro_id: a.membro, titulo: 'Sua escala foi alterada', mensagem: a.texto, lido: false }))
+        );
+        let falhasWhatsApp = 0;
+        if (enviarWhatsApp) {
+          for (const a of avisar) {
+            try {
+              await sendWhatsApp([a.membro], a.texto);
+            } catch (whatsErr) {
+              console.error('Erro ao enviar WhatsApp:', whatsErr);
+              falhasWhatsApp++;
+            }
+          }
+        }
+        if (avisoError) toast.error('Escala alterada, mas houve erro ao criar o aviso no app: ' + avisoError.message);
+        else if (falhasWhatsApp > 0) toast.error(`Escala alterada, mas ${falhasWhatsApp} WhatsApp(s) não foram enviados.`);
+        else toast.success(`Escala ${alvo ? 'trocada' : 'movida'} e ${avisar.length === 1 ? 'técnico avisado' : 'técnicos avisados'}.`);
+      } else {
+        toast.success(alvo ? 'Técnicos trocados.' : 'Escala movida.');
+      }
+      setMovPendente(null);
+    } catch (err: any) {
+      console.error('Erro ao mover escala:', err);
+      toast.error('Não foi possível alterar: ' + err.message);
+      carregarMes();
+    } finally {
+      marcarSalvando(origem.data, false);
+      marcarSalvando(data, false);
+      setProcessando(false);
+    }
+  };
+
   // Marcação dentro do dia: sessão + horário na 1ª linha, técnico na 2ª
   const renderMarcacao = (e: EscalaMes, cores: string, esmaecido: boolean) => (
-    <span
+    <Arrastavel
       key={e.id}
+      id={e.id}
+      disabled={e.data < hoje || travada(e) || processando || diasSalvando.has(e.data)}
+    >
+      {conteudoMarcacao(e, cores, esmaecido)}
+    </Arrastavel>
+  );
+
+  const conteudoMarcacao = (e: EscalaMes, cores: string, esmaecido: boolean) => (
+    <span
       className={`block rounded-md px-1 sm:px-1.5 py-0.5 sm:py-1 border leading-tight ${cores} ${e.publicada ? '' : 'border-dashed'} ${esmaecido ? 'opacity-30' : ''}`}
       title={`${e.tipo_sessao} · ${nomeMembro(e.membro_original_id)} · ${e.hora_inicio.slice(0, 5)} · ${e.publicada ? 'publicada' : 'rascunho'}`}
     >
@@ -368,11 +557,27 @@ Bom trabalho!`;
             const bloqueado = passado || slot?.publicada || (!!motivoAusencia && !doSelecionado);
 
             return (
-              <button
-                key={data}
-                type="button"
+              <Soltavel key={data} id={data}>
+              {(isOver, ref) => {
+              const destino = arrastando && isOver ? avaliarDestino(arrastando, data) : null;
+              const realceDestino =
+                destino?.tipo === 'mover' ? 'ring-2 ring-inset ring-green-500 bg-green-50 dark:bg-green-900/20'
+                : destino?.tipo === 'trocar' ? 'ring-2 ring-inset ring-blue-500 bg-blue-50 dark:bg-blue-900/20'
+                : destino?.tipo === 'bloqueado' ? 'ring-2 ring-inset ring-red-500 bg-red-50 dark:bg-red-900/20'
+                : '';
+              return (
+              <div
+                ref={ref}
+                role="button"
+                tabIndex={passado ? -1 : 0}
+                aria-disabled={passado}
                 onClick={() => handleClickDia(data)}
-                disabled={passado}
+                onKeyDown={ev => {
+                  if (ev.key === 'Enter' || ev.key === ' ') {
+                    ev.preventDefault();
+                    handleClickDia(data);
+                  }
+                }}
                 title={motivoAusencia ? `Ausência programada: ${motivoAusencia}` : undefined}
                 className={`group relative min-h-[68px] sm:min-h-[96px] p-1 sm:p-2 border-b border-r border-gray-100 dark:border-gray-700 text-left flex flex-col gap-1 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500 ${
                   passado
@@ -382,7 +587,7 @@ Bom trabalho!`;
                       : 'cursor-pointer hover:bg-blue-50/70 dark:hover:bg-gray-700/60'
                 } ${!passado && (diaSemana === 0 || diaSemana === 6) ? 'bg-gray-50/70 dark:bg-gray-800/60' : ''} ${
                   motivoAusencia && !passado ? 'bg-[repeating-linear-gradient(135deg,transparent_0_6px,rgba(245,158,11,0.16)_6px_12px)]' : ''
-                }`}
+                } ${realceDestino}`}
               >
                 <div className="flex items-center justify-between">
                   <span className={`text-xs sm:text-sm font-bold ${data === hoje ? 'bg-blue-600 text-white rounded-full w-6 h-6 grid place-items-center' : 'text-gray-700 dark:text-gray-200'}`}>{dia}</span>
@@ -428,7 +633,22 @@ Bom trabalho!`;
                     <AlertTriangle className="w-3 h-3 shrink-0" /> {tecnicoEmOutraSessao.tipo_sessao}
                   </span>
                 )}
-              </button>
+
+                {destino && destino.tipo !== 'mesmo' && (
+                  <span className={`text-[10px] font-bold leading-tight ${
+                    destino.tipo === 'mover' ? 'text-green-700 dark:text-green-400'
+                    : destino.tipo === 'trocar' ? 'text-blue-700 dark:text-blue-400'
+                    : 'text-red-700 dark:text-red-400'
+                  }`}>
+                    {destino.tipo === 'mover' ? 'Mover para cá'
+                      : destino.tipo === 'trocar' ? `Trocar com ${primeiroNome(nomeMembro(destino.alvo.membro_original_id))}`
+                      : destino.motivo}
+                  </span>
+                )}
+              </div>
+              );
+              }}
+              </Soltavel>
             );
           })}
         </div>
@@ -491,7 +711,7 @@ Bom trabalho!`;
           <div>
             <h2 className="text-xl sm:text-2xl font-bold text-gray-800 dark:text-gray-100">Montar Escala do Mês</h2>
             <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
-              Escolha a sessão e o técnico e clique nos dias para marcar; clique de novo para desmarcar. Tudo fica em rascunho até você publicar.
+              Escolha a sessão e o técnico e clique nos dias para marcar; clique de novo para desmarcar. Arraste uma marcação para mudar de dia ou trocar com outro técnico. Tudo fica em rascunho até você publicar.
             </p>
           </div>
           <button onClick={onClose} className="shrink-0 text-gray-500 hover:text-gray-700 dark:text-gray-300 dark:hover:text-gray-100 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 p-2 rounded-full transition-colors" title="Fechar">
@@ -607,7 +827,7 @@ Bom trabalho!`;
         {/* Legenda */}
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500 dark:text-gray-400">
           <span className="flex items-center gap-1.5"><span className="w-4 h-3 rounded border border-dashed border-gray-500" /> rascunho</span>
-          <span className="flex items-center gap-1.5"><Lock className="w-3 h-3" /> publicada (altere por "Editar Sessão")</span>
+          <span className="flex items-center gap-1.5"><Lock className="w-3 h-3" /> publicada (arraste para mover; o técnico é avisado)</span>
           <span className="flex items-center gap-1.5"><span className="w-4 h-3 rounded bg-[repeating-linear-gradient(135deg,transparent_0_3px,rgba(245,158,11,0.5)_3px_6px)]" /> ausência do técnico</span>
           {visao === 'sessao' ? (
             <span className="flex items-center gap-1.5">
@@ -630,7 +850,21 @@ Bom trabalho!`;
           </div>
         ) : (
           <>
-            {renderCalendario()}
+            <DndContext
+              sensors={sensores}
+              onDragStart={handleDragStart}
+              onDragEnd={handleDragEnd}
+              onDragCancel={() => setArrastando(null)}
+            >
+              {renderCalendario()}
+              <DragOverlay dropAnimation={null}>
+                {arrastando && (
+                  <div className="w-28 sm:w-36 shadow-xl rotate-2 cursor-grabbing">
+                    {conteudoMarcacao(arrastando, (CORES_SESSAO[arrastando.tipo_sessao] || COR_PADRAO).chip, false)}
+                  </div>
+                )}
+              </DragOverlay>
+            </DndContext>
             {renderResumo()}
           </>
         )}
@@ -709,6 +943,56 @@ Bom trabalho!`;
           </div>
         </div>
       )}
+
+      {movPendente && (() => {
+        const { origem, data, alvo } = movPendente;
+        const afetados = [origem, alvo].filter((e): e is EscalaMes => !!e && e.publicada);
+        return (
+          <div className="fixed inset-0 bg-black/40 z-[70] flex items-center justify-center p-4 backdrop-blur-sm">
+            <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-xl w-full max-w-md p-6">
+              <div className="w-14 h-14 bg-blue-100 dark:bg-blue-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
+                {alvo ? <ArrowRightLeft className="w-7 h-7 text-blue-600 dark:text-blue-400" /> : <MoveRight className="w-7 h-7 text-blue-600 dark:text-blue-400" />}
+              </div>
+              <h3 className="font-bold text-lg text-gray-900 dark:text-gray-100 text-center">
+                {alvo ? 'Trocar escalas publicadas?' : 'Mover escala publicada?'}
+              </h3>
+              <div className="mt-4 space-y-2 text-sm text-gray-700 dark:text-gray-200">
+                <p className="p-3 rounded-xl bg-gray-50 dark:bg-gray-700/50">
+                  <strong>{nomeMembro(origem.membro_original_id)}</strong> · {origem.tipo_sessao}<br />
+                  {formatDiaCurto(origem.data)} → <strong>{formatDiaCurto(data)}</strong>
+                </p>
+                {alvo && (
+                  <p className="p-3 rounded-xl bg-gray-50 dark:bg-gray-700/50">
+                    <strong>{nomeMembro(alvo.membro_original_id)}</strong> · {alvo.tipo_sessao}<br />
+                    {formatDiaCurto(alvo.data)} → <strong>{formatDiaCurto(origem.data)}</strong>
+                  </p>
+                )}
+              </div>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-3">
+                {afetados.map(e => primeiroNome(nomeMembro(e.membro_original_id))).join(' e ')} {afetados.length === 1 ? 'receberá' : 'receberão'} um aviso no app com a mudança. O lembrete de {LEMBRETE_ANTECEDENCIA_MIN} minutos segue o novo dia.
+              </p>
+              <label className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-200 cursor-pointer mt-3">
+                <input
+                  type="checkbox"
+                  checked={enviarWhatsApp}
+                  onChange={e => setEnviarWhatsApp(e.target.checked)}
+                  className="rounded w-4 h-4 border-gray-300 dark:border-gray-600 text-blue-600 focus:ring-blue-500"
+                />
+                Avisar também por WhatsApp
+              </label>
+              <div className="flex gap-3 justify-end mt-6">
+                <button onClick={() => setMovPendente(null)} disabled={processando} className="px-4 py-2.5 font-medium text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-xl transition-colors">
+                  Cancelar
+                </button>
+                <button onClick={() => aplicarMovimento(origem, data, alvo)} disabled={processando} className="px-5 py-2.5 font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-xl flex items-center gap-2 disabled:opacity-50 shadow-sm transition-colors">
+                  {processando && <Loader2 className="w-4 h-4 animate-spin" />}
+                  {processando ? 'Salvando...' : alvo ? 'Trocar e avisar' : 'Mover e avisar'}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {confirmDescartar && (
         <div className="fixed inset-0 bg-black/40 z-[70] flex items-center justify-center p-4 backdrop-blur-sm">
