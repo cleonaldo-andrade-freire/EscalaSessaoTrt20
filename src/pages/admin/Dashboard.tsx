@@ -46,6 +46,7 @@ const Dashboard = () => {
       const { count: countEscalas } = await supabase
         .from('escalas')
         .select('*', { count: 'exact', head: true })
+        .eq('publicada', true)
         .in('data', [hojeStr, amanhaStr]);
 
       // 4. Check-outs pendentes (check-in feito, sem check-out) nos últimos 30 dias

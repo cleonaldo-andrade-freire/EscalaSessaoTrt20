@@ -8,6 +8,7 @@ import { sendWhatsApp } from '../../services/whatsappService';
 import { FUNCOES_DISPONIVEIS, MENSAGEM_PADRAO_SESSAO } from '../../constants';
 import { registrarCheckin, registrarCheckout } from '../../services/presencaService';
 import { getLocalDateStr, formatHora, getHoraAtual, combinarDataHora } from '../../utils/date';
+import { negrito, preencherTemplate } from '../../utils/mensagem';
 
 const MemberGeneralSchedule = () => {
   const [escalas, setEscalas] = useState<any[]>([]);
@@ -40,18 +41,14 @@ const MemberGeneralSchedule = () => {
     const escaladosList = group.itens.map((slot: any) => {
       const isSub = slot.status_substituicao === 'Substituição Aceita';
       const membro = isSub ? slot.membro_substituto : slot.membro_original;
-      return `${slot.funcao}: ${membro ? membro.nome : 'Vago'}`;
+      return `${slot.funcao}: ${membro ? negrito(membro.nome) : 'Vago'}`;
     }).join('\n');
 
     let dataObj = new Date(group.data);
     dataObj.setUTCHours(12);
     const dateFormatted = dataObj.toLocaleDateString('pt-BR');
 
-    text = text
-      .replace(/{{sessao}}/g, group.sessao)
-      .replace(/{{data}}/g, dateFormatted)
-      .replace(/{{horario}}/g, group.hora || '')
-      .replace(/{{escalados}}/g, escaladosList);
+    text = preencherTemplate(text, { sessao: group.sessao, data: dateFormatted, horario: group.hora || '', escalados: escaladosList });
     
     setNoticeText(text);
     setNoticeConfirmation({ isOpen: true, scaleGroup: group });

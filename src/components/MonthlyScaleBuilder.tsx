@@ -1,0 +1,629 @@
+import React, { useEffect, useMemo, useState } from 'react';
+import toast from 'react-hot-toast';
+import { ChevronLeft, ChevronRight, X, Lock, Send, Trash2, Loader2, CalendarCheck, AlertTriangle } from 'lucide-react';
+import { supabase } from '../services/supabaseClient';
+import { sendWhatsApp } from '../services/whatsappService';
+import { SESSOES_DISPONIVEIS, FUNCOES_DISPONIVEIS, LEMBRETE_ANTECEDENCIA_MIN } from '../constants';
+import { getLocalDateStr } from '../utils/date';
+import { negrito } from '../utils/mensagem';
+
+// ---------------------------------------------------------------------------
+// Montador da escala mensal: o admin escolhe sessão + técnico e clica nos dias
+// do mês para marcar/desmarcar. Cada marcação é gravada como rascunho
+// (escalas.publicada = false), invisível para os técnicos e ignorada pelo
+// lembrete automático, até o admin publicar o mês — momento em que cada
+// técnico recebe um aviso (app e, opcionalmente, WhatsApp) com seus dias.
+// ---------------------------------------------------------------------------
+
+interface MembroResumo {
+  id: string;
+  nome: string;
+  ativo?: boolean;
+}
+
+interface EscalaMes {
+  id: string;
+  data: string;
+  hora_inicio: string;
+  tipo_sessao: string;
+  funcao: string;
+  membro_original_id: string;
+  publicada: boolean;
+}
+
+interface MonthlyScaleBuilderProps {
+  mesInicial: string; // YYYY-MM
+  membros: MembroResumo[];
+  onClose: () => void;
+}
+
+const CAMPOS_ESCALA = 'id, data, hora_inicio, tipo_sessao, funcao, membro_original_id, publicada';
+
+const CORES_SESSAO: Record<string, { chip: string; dot: string; tab: string }> = {
+  '1ª Turma': { chip: 'bg-blue-900 text-white border-blue-300 dark:bg-blue-800 dark:border-blue-400', dot: 'bg-blue-900 dark:bg-blue-400', tab: 'bg-blue-900 text-white dark:bg-blue-700' },
+  '2ª Turma': { chip: 'bg-emerald-700 text-white border-emerald-300 dark:bg-emerald-800 dark:border-emerald-400', dot: 'bg-emerald-600 dark:bg-emerald-400', tab: 'bg-emerald-700 text-white dark:bg-emerald-700' },
+  'Pleno': { chip: 'bg-amber-400 text-amber-950 border-amber-700 dark:bg-amber-500', dot: 'bg-amber-400', tab: 'bg-amber-400 text-amber-950' },
+};
+const COR_PADRAO = { chip: 'bg-gray-700 text-white border-gray-400', dot: 'bg-gray-400', tab: 'bg-gray-700 text-white' };
+
+const deslocarMes = (mes: string, delta: number) => {
+  const [ano, m] = mes.split('-').map(Number);
+  const d = new Date(ano, m - 1 + delta, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+};
+
+const primeiroNome = (nome?: string) => nome?.split(' ')[0] || '—';
+
+const iniciais = (nome: string) =>
+  nome.split(' ').filter(Boolean).slice(0, 2).map(p => p[0]).join('').toUpperCase();
+
+const formatDiaCurto = (data: string) =>
+  new Intl.DateTimeFormat('pt-BR', { weekday: 'short', day: '2-digit', month: '2-digit' }).format(new Date(data + 'T12:00:00'));
+
+const MonthlyScaleBuilder: React.FC<MonthlyScaleBuilderProps> = ({ mesInicial, membros, onClose }) => {
+  const [mes, setMes] = useState(mesInicial);
+  const [sessao, setSessao] = useState(SESSOES_DISPONIVEIS[0]);
+  const [funcao, setFuncao] = useState(FUNCOES_DISPONIVEIS[0]);
+  const [membroId, setMembroId] = useState('');
+  const [horas, setHoras] = useState<Record<string, string>>({});
+
+  const [escalas, setEscalas] = useState<EscalaMes[]>([]);
+  const [ausencias, setAusencias] = useState<Record<string, Record<string, string>>>({});
+  const [loading, setLoading] = useState(true);
+  const [diasSalvando, setDiasSalvando] = useState<Set<string>>(new Set());
+
+  const [confirmPublicar, setConfirmPublicar] = useState(false);
+  const [confirmDescartar, setConfirmDescartar] = useState(false);
+  const [enviarWhatsApp, setEnviarWhatsApp] = useState(true);
+  const [processando, setProcessando] = useState(false);
+
+  const hoje = getLocalDateStr();
+  const hora = horas[sessao] || '';
+  const membrosAtivos = membros.filter(m => m.ativo !== false);
+  const nomeMembro = (id: string) => membros.find(m => m.id === id)?.nome || 'Técnico';
+  const nomeMes = new Intl.DateTimeFormat('pt-BR', { month: 'long', year: 'numeric' }).format(new Date(mes + '-01T12:00:00'));
+
+  // Horário padrão de cada sessão = o último usado para ela
+  useEffect(() => {
+    supabase
+      .from('escalas')
+      .select('tipo_sessao, hora_inicio')
+      .order('data', { ascending: false })
+      .limit(60)
+      .then(({ data }) => {
+        const padrao: Record<string, string> = {};
+        data?.forEach((e: any) => {
+          if (!padrao[e.tipo_sessao] && e.hora_inicio) padrao[e.tipo_sessao] = e.hora_inicio.slice(0, 5);
+        });
+        setHoras(prev => ({ ...padrao, ...prev }));
+      });
+  }, []);
+
+  const carregarMes = async (isAtual: () => boolean = () => true) => {
+    setLoading(true);
+    const [ano, m] = mes.split('-').map(Number);
+    const inicio = getLocalDateStr(new Date(ano, m - 1, 1));
+    const fim = getLocalDateStr(new Date(ano, m, 0));
+
+    const [escRes, ausRes] = await Promise.all([
+      supabase.from('escalas').select(CAMPOS_ESCALA).gte('data', inicio).lte('data', fim),
+      supabase.from('ausencias_programadas').select('membro_id, data_especifica, motivo').gte('data_especifica', inicio).lte('data_especifica', fim),
+    ]);
+    if (!isAtual()) return;
+
+    if (escRes.error) toast.error('Erro ao carregar escalas: ' + escRes.error.message);
+    setEscalas((escRes.data as EscalaMes[]) || []);
+
+    const mapa: Record<string, Record<string, string>> = {};
+    ausRes.data?.forEach((a: any) => {
+      (mapa[a.membro_id] ||= {})[a.data_especifica] = a.motivo?.trim() || 'Motivo não informado';
+    });
+    setAusencias(mapa);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    let atual = true;
+    carregarMes(() => atual);
+    return () => { atual = false; };
+  }, [mes]);
+
+  const porSlot = useMemo(() => {
+    const mapa: Record<string, EscalaMes> = {};
+    escalas.forEach(e => { mapa[`${e.data}|${e.tipo_sessao}|${e.funcao}`] = e; });
+    return mapa;
+  }, [escalas]);
+
+  const porDia = useMemo(() => {
+    const mapa: Record<string, EscalaMes[]> = {};
+    escalas.forEach(e => { (mapa[e.data] ||= []).push(e); });
+    return mapa;
+  }, [escalas]);
+
+  const diasPorMembro = useMemo(() => {
+    const cont: Record<string, number> = {};
+    escalas.forEach(e => { cont[e.membro_original_id] = (cont[e.membro_original_id] || 0) + 1; });
+    return cont;
+  }, [escalas]);
+
+  const rascunhos = escalas.filter(e => !e.publicada);
+  const rascunhosAPublicar = rascunhos
+    .filter(e => e.data >= hoje)
+    .sort((a, b) => (a.data + a.hora_inicio).localeCompare(b.data + b.hora_inicio));
+
+  const rascunhosPorMembro = useMemo(() => {
+    const grupos: Record<string, EscalaMes[]> = {};
+    rascunhosAPublicar.forEach(e => { (grupos[e.membro_original_id] ||= []).push(e); });
+    return grupos;
+  }, [rascunhosAPublicar]);
+
+  const marcarSalvando = (data: string, ativo: boolean) => {
+    setDiasSalvando(prev => {
+      const novo = new Set(prev);
+      if (ativo) novo.add(data); else novo.delete(data);
+      return novo;
+    });
+  };
+
+  const handleClickDia = async (data: string) => {
+    if (data < hoje || diasSalvando.has(data)) return;
+
+    const atual = porSlot[`${data}|${sessao}|${funcao}`];
+    if (atual?.publicada) {
+      toast('Esta escala já foi publicada. Para alterá-la, use "Editar Sessão".', { icon: '🔒' });
+      return;
+    }
+    if (!membroId) {
+      toast.error('Escolha primeiro o técnico.');
+      return;
+    }
+
+    const desmarcar = atual?.membro_original_id === membroId;
+    if (!desmarcar) {
+      const motivo = ausencias[membroId]?.[data];
+      if (motivo) {
+        toast.error(`${primeiroNome(nomeMembro(membroId))} tem ausência programada neste dia: ${motivo}`);
+        return;
+      }
+      if (!hora) {
+        toast.error('Informe o horário de início da sessão.');
+        return;
+      }
+    }
+
+    marcarSalvando(data, true);
+    try {
+      if (atual && desmarcar) {
+        setEscalas(prev => prev.filter(e => e.id !== atual.id));
+        const { error } = await supabase.from('escalas').delete().eq('id', atual.id);
+        if (error) {
+          setEscalas(prev => [...prev, atual]);
+          throw error;
+        }
+      } else if (atual) {
+        const alterado = { ...atual, membro_original_id: membroId, hora_inicio: hora };
+        setEscalas(prev => prev.map(e => (e.id === atual.id ? alterado : e)));
+        const { error } = await supabase
+          .from('escalas')
+          .update({ membro_original_id: membroId, hora_inicio: hora })
+          .eq('id', atual.id);
+        if (error) {
+          setEscalas(prev => prev.map(e => (e.id === atual.id ? atual : e)));
+          throw error;
+        }
+      } else {
+        const { data: nova, error } = await supabase
+          .from('escalas')
+          .insert({
+            data,
+            hora_inicio: hora,
+            tipo_sessao: sessao,
+            funcao,
+            membro_original_id: membroId,
+            status_substituicao: 'Nenhum',
+            publicada: false,
+          })
+          .select(CAMPOS_ESCALA)
+          .single();
+        if (error) throw error;
+        setEscalas(prev => [...prev, nova as EscalaMes]);
+      }
+    } catch (err: any) {
+      console.error('Erro ao salvar rascunho da escala:', err);
+      toast.error('Não foi possível salvar: ' + err.message);
+    } finally {
+      marcarSalvando(data, false);
+    }
+  };
+
+  const montarMensagem = (id: string, itens: EscalaMes[]) => {
+    const linhas = itens
+      .map(e => `• ${negrito(formatDiaCurto(e.data))} — ${e.tipo_sessao}, às ${negrito(e.hora_inicio.slice(0, 5))}`)
+      .join('\n');
+    return `Olá, ${primeiroNome(nomeMembro(id))}! 📅
+
+A escala de suporte às sessões de ${negrito(nomeMes)} foi publicada. Seus dias:
+
+${linhas}
+
+⏰ Você receberá um lembrete ${LEMBRETE_ANTECEDENCIA_MIN} minutos antes de cada sessão. Confira os detalhes no app.
+
+Bom trabalho!`;
+  };
+
+  const handlePublicar = async () => {
+    if (rascunhosAPublicar.length === 0) return;
+    setProcessando(true);
+    try {
+      const ids = rascunhosAPublicar.map(e => e.id);
+      const { error } = await supabase.from('escalas').update({ publicada: true }).in('id', ids);
+      if (error) throw error;
+      setEscalas(prev => prev.map(e => (ids.includes(e.id) ? { ...e, publicada: true } : e)));
+
+      const mensagens = Object.entries(rascunhosPorMembro).map(([id, itens]) => ({ id, texto: montarMensagem(id, itens) }));
+      const tituloMes = nomeMes.charAt(0).toUpperCase() + nomeMes.slice(1);
+
+      const { error: avisoError } = await supabase.from('avisos').insert(
+        mensagens.map(m => ({ membro_id: m.id, titulo: `Escala de ${tituloMes} publicada`, mensagem: m.texto, lido: false }))
+      );
+
+      let falhasWhatsApp = 0;
+      if (enviarWhatsApp) {
+        for (const m of mensagens) {
+          try {
+            await sendWhatsApp([m.id], m.texto);
+          } catch (whatsErr) {
+            console.error('Erro ao enviar WhatsApp:', whatsErr);
+            falhasWhatsApp++;
+          }
+        }
+      }
+
+      if (avisoError) {
+        toast.error('Escala publicada, mas houve erro ao criar os avisos no app: ' + avisoError.message);
+      } else if (falhasWhatsApp > 0) {
+        toast.error(`Escala publicada, mas ${falhasWhatsApp} WhatsApp(s) não foram enviados.`);
+      } else {
+        toast.success(`Escala publicada! ${mensagens.length} técnico(s) avisado(s).`);
+      }
+      setConfirmPublicar(false);
+    } catch (err: any) {
+      console.error('Erro ao publicar escala:', err);
+      toast.error('Erro ao publicar: ' + err.message);
+    } finally {
+      setProcessando(false);
+    }
+  };
+
+  const handleDescartar = async () => {
+    setProcessando(true);
+    try {
+      const ids = rascunhos.map(e => e.id);
+      const { error } = await supabase.from('escalas').delete().in('id', ids);
+      if (error) throw error;
+      setEscalas(prev => prev.filter(e => !ids.includes(e.id)));
+      toast.success('Rascunhos descartados.');
+      setConfirmDescartar(false);
+    } catch (err: any) {
+      toast.error('Erro ao descartar: ' + err.message);
+    } finally {
+      setProcessando(false);
+    }
+  };
+
+  const renderCalendario = () => {
+    const [ano, m] = mes.split('-').map(Number);
+    const primeiroDiaSemana = new Date(ano, m - 1, 1).getDay();
+    const totalDias = new Date(ano, m, 0).getDate();
+    const celulas: (number | null)[] = [
+      ...Array(primeiroDiaSemana).fill(null),
+      ...Array.from({ length: totalDias }, (_, i) => i + 1),
+    ];
+    const cor = CORES_SESSAO[sessao] || COR_PADRAO;
+
+    return (
+      <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl shadow-sm overflow-hidden">
+        <div className="grid grid-cols-7 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50">
+          {['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'].map(d => (
+            <div key={d} className="py-2 text-center text-[11px] sm:text-xs font-bold text-gray-500 dark:text-gray-400 uppercase">{d}</div>
+          ))}
+        </div>
+        <div className="grid grid-cols-7">
+          {celulas.map((dia, i) => {
+            if (!dia) return <div key={`vazio-${i}`} className="border-b border-r border-gray-100 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-800/40" />;
+
+            const data = `${mes}-${String(dia).padStart(2, '0')}`;
+            const diaSemana = (primeiroDiaSemana + dia - 1) % 7;
+            const passado = data < hoje;
+            const salvando = diasSalvando.has(data);
+            const slot = porSlot[`${data}|${sessao}|${funcao}`];
+            const doSelecionado = !!slot && slot.membro_original_id === membroId;
+            const motivoAusencia = membroId ? ausencias[membroId]?.[data] : undefined;
+            const outrasSessoes = (porDia[data] || []).filter(e => e.tipo_sessao !== sessao);
+            const tecnicoEmOutraSessao = membroId ? outrasSessoes.find(e => e.membro_original_id === membroId) : undefined;
+            const bloqueado = passado || slot?.publicada || (!!motivoAusencia && !doSelecionado);
+
+            return (
+              <button
+                key={data}
+                type="button"
+                onClick={() => handleClickDia(data)}
+                disabled={passado}
+                title={motivoAusencia ? `Ausência programada: ${motivoAusencia}` : undefined}
+                className={`group relative min-h-[68px] sm:min-h-[96px] p-1 sm:p-2 border-b border-r border-gray-100 dark:border-gray-700 text-left flex flex-col gap-1 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500 ${
+                  passado
+                    ? 'bg-gray-50 dark:bg-gray-800/40 opacity-45 cursor-not-allowed'
+                    : bloqueado
+                      ? 'cursor-not-allowed'
+                      : 'cursor-pointer hover:bg-blue-50/70 dark:hover:bg-gray-700/60'
+                } ${!passado && (diaSemana === 0 || diaSemana === 6) ? 'bg-gray-50/70 dark:bg-gray-800/60' : ''} ${
+                  motivoAusencia && !passado ? 'bg-[repeating-linear-gradient(135deg,transparent_0_6px,rgba(245,158,11,0.16)_6px_12px)]' : ''
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className={`text-xs sm:text-sm font-bold ${data === hoje ? 'bg-blue-600 text-white rounded-full w-6 h-6 grid place-items-center' : 'text-gray-700 dark:text-gray-200'}`}>{dia}</span>
+                  <span className="flex gap-0.5">
+                    {outrasSessoes.map(e => (
+                      <span
+                        key={e.id}
+                        className={`w-1.5 h-1.5 rounded-full ${(CORES_SESSAO[e.tipo_sessao] || COR_PADRAO).dot}`}
+                        title={`${e.tipo_sessao}: ${nomeMembro(e.membro_original_id)}`}
+                      />
+                    ))}
+                  </span>
+                </div>
+
+                {salvando ? (
+                  <Loader2 className="w-4 h-4 animate-spin text-blue-500 mx-auto mt-1" />
+                ) : slot ? (
+                  <span
+                    className={`flex items-center gap-1 rounded-md px-1 sm:px-1.5 py-0.5 sm:py-1 text-[10px] sm:text-[11px] font-semibold border ${
+                      doSelecionado ? cor.chip : 'bg-gray-100 text-gray-700 border-gray-300 dark:bg-gray-700 dark:text-gray-200 dark:border-gray-500'
+                    } ${slot.publicada ? '' : 'border-dashed'}`}
+                    title={`${nomeMembro(slot.membro_original_id)} · ${slot.hora_inicio.slice(0, 5)} · ${slot.publicada ? 'publicada' : 'rascunho'}`}
+                  >
+                    {slot.publicada && <Lock className="w-3 h-3 shrink-0" />}
+                    <span className="truncate">{primeiroNome(nomeMembro(slot.membro_original_id))}</span>
+                    <span className="hidden md:inline ml-auto font-normal opacity-75">{slot.hora_inicio.slice(0, 5)}</span>
+                  </span>
+                ) : motivoAusencia && !passado ? (
+                  <span className="text-[10px] font-semibold text-amber-700 dark:text-amber-400">Ausente</span>
+                ) : !passado && membroId ? (
+                  <span className="hidden sm:group-hover:block text-[11px] text-gray-400 dark:text-gray-500">+ {primeiroNome(nomeMembro(membroId))}</span>
+                ) : null}
+
+                {tecnicoEmOutraSessao && !passado && (
+                  <span className="hidden sm:flex items-center gap-0.5 text-[10px] text-amber-700 dark:text-amber-400 truncate" title={`${primeiroNome(nomeMembro(membroId))} também está na ${tecnicoEmOutraSessao.tipo_sessao} neste dia`}>
+                    <AlertTriangle className="w-3 h-3 shrink-0" /> {tecnicoEmOutraSessao.tipo_sessao}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-gray-100 dark:bg-gray-900 overflow-y-auto">
+      <div className="max-w-6xl mx-auto px-4 py-4 sm:py-6 pb-28 space-y-4">
+        {/* Cabeçalho */}
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-xl sm:text-2xl font-bold text-gray-800 dark:text-gray-100">Montar Escala do Mês</h2>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
+              Escolha a sessão e o técnico e clique nos dias para marcar; clique de novo para desmarcar. Tudo fica em rascunho até você publicar.
+            </p>
+          </div>
+          <button onClick={onClose} className="shrink-0 text-gray-500 hover:text-gray-700 dark:text-gray-300 dark:hover:text-gray-100 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 p-2 rounded-full transition-colors" title="Fechar">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Controles */}
+        <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl shadow-sm p-4 space-y-4">
+          <div className="flex flex-wrap items-end gap-x-6 gap-y-4">
+            <div>
+              <label className="block text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1.5">Mês</label>
+              <div className="flex items-center gap-1">
+                <button onClick={() => setMes(deslocarMes(mes, -1))} className="p-1.5 rounded-lg text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
+                  <ChevronLeft className="w-5 h-5" />
+                </button>
+                <span className="font-bold text-gray-800 dark:text-gray-100 capitalize w-40 text-center">{nomeMes}</span>
+                <button onClick={() => setMes(deslocarMes(mes, 1))} className="p-1.5 rounded-lg text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
+                  <ChevronRight className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1.5">Sessão</label>
+              <div className="flex bg-gray-100 dark:bg-gray-700/80 p-1 rounded-xl">
+                {SESSOES_DISPONIVEIS.map(s => (
+                  <button
+                    key={s}
+                    onClick={() => setSessao(s)}
+                    className={`px-3 py-1.5 text-sm font-semibold rounded-lg transition-colors ${
+                      sessao === s ? `${(CORES_SESSAO[s] || COR_PADRAO).tab} shadow-sm` : 'text-gray-500 dark:text-gray-300 hover:text-gray-800 dark:hover:text-gray-100'
+                    }`}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1.5">Início</label>
+              <input
+                type="time"
+                value={hora}
+                onChange={e => setHoras(prev => ({ ...prev, [sessao]: e.target.value }))}
+                className="border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 dark:text-white rounded-xl px-3 py-1.5 focus:ring-blue-500 focus:border-blue-500"
+              />
+            </div>
+
+            {FUNCOES_DISPONIVEIS.length > 1 && (
+              <div>
+                <label className="block text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1.5">Função</label>
+                <select
+                  value={funcao}
+                  onChange={e => setFuncao(e.target.value)}
+                  className="border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 dark:text-white rounded-xl px-3 py-2 text-sm focus:ring-blue-500 focus:border-blue-500"
+                >
+                  {FUNCOES_DISPONIVEIS.map(f => <option key={f} value={f}>{f}</option>)}
+                </select>
+              </div>
+            )}
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1.5">
+              Técnico <span className="normal-case font-medium">(número = dias escalados no mês)</span>
+            </label>
+            <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1 -mx-1 px-1">
+              {membrosAtivos.map(m => {
+                const selecionado = m.id === membroId;
+                return (
+                  <button
+                    key={m.id}
+                    onClick={() => setMembroId(selecionado ? '' : m.id)}
+                    className={`shrink-0 flex items-center gap-2 pl-1 pr-3 py-1 rounded-full border text-sm font-medium transition-colors ${
+                      selecionado
+                        ? 'bg-blue-600 border-blue-600 text-white shadow-sm'
+                        : 'bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:border-blue-400'
+                    }`}
+                  >
+                    <span className={`w-7 h-7 rounded-full grid place-items-center text-[11px] font-bold ${selecionado ? 'bg-white/20' : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300'}`}>
+                      {iniciais(m.nome)}
+                    </span>
+                    {m.nome.split(' ').slice(0, 2).join(' ')}
+                    <span className={`text-xs font-bold px-1.5 rounded-full ${selecionado ? 'bg-white/20' : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400'}`}>
+                      {diasPorMembro[m.id] || 0}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        {/* Legenda */}
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500 dark:text-gray-400">
+          <span className="flex items-center gap-1.5"><span className="w-4 h-3 rounded border border-dashed border-gray-500" /> rascunho</span>
+          <span className="flex items-center gap-1.5"><Lock className="w-3 h-3" /> publicada (altere por "Editar Sessão")</span>
+          <span className="flex items-center gap-1.5"><span className="w-4 h-3 rounded bg-[repeating-linear-gradient(135deg,transparent_0_3px,rgba(245,158,11,0.5)_3px_6px)]" /> ausência do técnico</span>
+          <span className="flex items-center gap-1.5">
+            {SESSOES_DISPONIVEIS.map(s => <span key={s} className={`w-1.5 h-1.5 rounded-full ${(CORES_SESSAO[s] || COR_PADRAO).dot}`} />)}
+            outras sessões no dia
+          </span>
+        </div>
+
+        {loading ? (
+          <div className="flex justify-center p-12">
+            <Loader2 className="w-8 h-8 animate-spin text-blue-600 dark:text-blue-400" />
+          </div>
+        ) : renderCalendario()}
+      </div>
+
+      {/* Barra de publicação */}
+      <div className="fixed bottom-0 inset-x-0 bg-white/95 dark:bg-gray-800/95 backdrop-blur border-t border-gray-200 dark:border-gray-700">
+        <div className="max-w-6xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm text-gray-600 dark:text-gray-300">
+            <strong>{rascunhos.length}</strong> {rascunhos.length === 1 ? 'dia em rascunho' : 'dias em rascunho'} em <span className="capitalize">{nomeMes}</span>
+            <span className="hidden sm:inline text-gray-400"> · invisíveis para os técnicos até publicar</span>
+          </p>
+          <div className="flex gap-2 ml-auto">
+            {rascunhos.length > 0 && (
+              <button
+                onClick={() => setConfirmDescartar(true)}
+                className="px-3 py-2 text-sm font-medium text-red-600 dark:text-red-400 border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/40 rounded-xl flex items-center gap-1.5 transition-colors"
+              >
+                <Trash2 className="w-4 h-4" /> Descartar
+              </button>
+            )}
+            <button
+              onClick={() => setConfirmPublicar(true)}
+              disabled={rascunhosAPublicar.length === 0}
+              className="px-4 py-2 text-sm font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-xl flex items-center gap-1.5 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              <CalendarCheck className="w-4 h-4" /> Publicar mês
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {confirmPublicar && (
+        <div className="fixed inset-0 bg-black/40 z-[70] flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-xl w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden">
+            <div className="p-6 border-b border-gray-100 dark:border-gray-700">
+              <h3 className="font-bold text-lg text-gray-900 dark:text-gray-100">Publicar escala de <span className="capitalize">{nomeMes}</span></h3>
+              <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+                {rascunhosAPublicar.length} {rascunhosAPublicar.length === 1 ? 'dia passa' : 'dias passam'} a ser visíveis e cada técnico recebe um aviso com os seus dias.
+              </p>
+            </div>
+            <div className="p-6 overflow-y-auto space-y-3 flex-1">
+              {Object.entries(rascunhosPorMembro).map(([id, itens]) => (
+                <div key={id} className="p-3 rounded-xl bg-gray-50 dark:bg-gray-700/50 border border-gray-100 dark:border-gray-700">
+                  <p className="text-sm font-bold text-gray-800 dark:text-gray-100">{nomeMembro(id)} <span className="font-medium text-gray-500 dark:text-gray-400">· {itens.length} {itens.length === 1 ? 'dia' : 'dias'}</span></p>
+                  <p className="text-xs text-gray-600 dark:text-gray-300 mt-1 leading-relaxed">
+                    {itens.map(e => `${formatDiaCurto(e.data)} (${e.tipo_sessao})`).join(' · ')}
+                  </p>
+                </div>
+              ))}
+              {rascunhos.length > rascunhosAPublicar.length && (
+                <p className="text-xs text-amber-700 dark:text-amber-400">Rascunhos em dias que já passaram não serão publicados.</p>
+              )}
+            </div>
+            <div className="p-6 border-t border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 space-y-4">
+              <label className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-200 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={enviarWhatsApp}
+                  onChange={e => setEnviarWhatsApp(e.target.checked)}
+                  className="rounded w-4 h-4 border-gray-300 dark:border-gray-600 text-blue-600 focus:ring-blue-500"
+                />
+                Avisar também por WhatsApp (o aviso no app é sempre criado)
+              </label>
+              <p className="text-xs text-gray-500 dark:text-gray-400 -mt-2">O lembrete automático de {LEMBRETE_ANTECEDENCIA_MIN} minutos antes de cada sessão continua valendo.</p>
+              <div className="flex gap-3 justify-end">
+                <button onClick={() => setConfirmPublicar(false)} disabled={processando} className="px-4 py-2.5 font-medium text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 border dark:border-gray-600 rounded-xl transition-colors">
+                  Cancelar
+                </button>
+                <button onClick={handlePublicar} disabled={processando} className="px-5 py-2.5 font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-xl flex items-center gap-2 disabled:opacity-50 shadow-sm transition-colors">
+                  {processando ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                  {processando ? 'Publicando...' : 'Publicar e avisar'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmDescartar && (
+        <div className="fixed inset-0 bg-black/40 z-[70] flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-xl w-full max-w-sm p-6 text-center">
+            <div className="w-14 h-14 bg-red-100 dark:bg-red-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
+              <Trash2 className="w-7 h-7 text-red-600 dark:text-red-400" />
+            </div>
+            <h3 className="font-bold text-lg text-gray-900 dark:text-gray-100">Descartar rascunhos?</h3>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">
+              Os {rascunhos.length} dias em rascunho de <span className="capitalize">{nomeMes}</span> serão apagados. As escalas já publicadas não são afetadas.
+            </p>
+            <div className="flex gap-3 justify-center mt-6">
+              <button onClick={() => setConfirmDescartar(false)} disabled={processando} className="px-4 py-2.5 font-medium text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-xl transition-colors">
+                Cancelar
+              </button>
+              <button onClick={handleDescartar} disabled={processando} className="px-5 py-2.5 font-bold text-white bg-red-600 hover:bg-red-700 rounded-xl disabled:opacity-50 transition-colors">
+                {processando ? 'Descartando...' : 'Descartar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default MonthlyScaleBuilder;

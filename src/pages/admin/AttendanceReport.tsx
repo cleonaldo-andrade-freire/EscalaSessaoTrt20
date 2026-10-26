@@ -65,6 +65,7 @@ const AttendanceReport = () => {
         quem_checkin:checkin_por ( nome ),
         quem_checkout:checkout_por ( nome )
       `)
+      .eq('publicada', true)
       .lte('data', fim);
 
     if (dataInicio) query = query.gte('data', dataInicio);

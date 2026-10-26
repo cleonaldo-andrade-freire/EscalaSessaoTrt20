@@ -3,8 +3,11 @@ import React, { useState, useEffect } from 'react';
 import { supabase } from '../../services/supabaseClient';
 import { sendWhatsApp } from '../../services/whatsappService';
 import AdminLayout from '../../layouts/AdminLayout';
-import { Calendar as CalendarIcon, Plus, User, AlertCircle, AlertTriangle, Search, Filter, Trash2, ChevronLeft, ChevronRight, CheckCircle2, Loader2, X, XCircle, RotateCcw, Send, MessageCircle, LogIn, LogOut, Clock } from 'lucide-react';
+import { Calendar as CalendarIcon, Plus, User, AlertCircle, AlertTriangle, Search, Filter, Trash2, ChevronLeft, ChevronRight, CheckCircle2, Loader2, X, XCircle, RotateCcw, Send, MessageCircle, LogIn, LogOut, Clock, CalendarDays } from 'lucide-react';
 import CustomDatePicker from '../../components/CustomDatePicker';
+import MonthlyScaleBuilder from '../../components/MonthlyScaleBuilder';
+import TextoFormatado from '../../components/TextoFormatado';
+import { negrito, preencherTemplate } from '../../utils/mensagem';
 import { SESSOES_DISPONIVEIS, FUNCOES_DISPONIVEIS, MENSAGEM_PADRAO_SESSAO, LEMBRETE_ANTECEDENCIA_MIN } from '../../constants';
 import { registrarCheckin, registrarCheckout } from '../../services/presencaService';
 import { getLocalDateStr, formatHora, formatDuracao, getHoraAtual, combinarDataHora } from '../../utils/date';
@@ -45,6 +48,8 @@ const ManageScales = () => {
   }>({ isOpen: false, conflicts: [] });
   const [formDateAusencias, setFormDateAusencias] = useState<Record<string, string>>({});
 
+  const [isBuilderOpen, setIsBuilderOpen] = useState(false);
+
   // Filtros
   const [viewMode, setViewMode] = useState<'lista' | 'mensal'>('lista');
   const [showPast, setShowPast] = useState(false);
@@ -83,18 +88,14 @@ const ManageScales = () => {
     const escaladosList = group.slots.map((slot: any) => {
       const isSub = slot.status_substituicao === 'Substituição Aceita';
       const membro = isSub ? slot.membro_substituto : slot.membro_original;
-      return `${slot.funcao}: ${membro ? membro.nome : 'Vago'}`;
+      return `${slot.funcao}: ${membro ? negrito(membro.nome) : 'Vago'}`;
     }).join('\n');
 
     let dataObj = new Date(group.data);
     dataObj.setUTCHours(12);
     const dateFormatted = dataObj.toLocaleDateString('pt-BR');
 
-    text = text
-      .replace(/{{sessao}}/g, group.sessao)
-      .replace(/{{data}}/g, dateFormatted)
-      .replace(/{{horario}}/g, group.hora || '')
-      .replace(/{{escalados}}/g, escaladosList);
+    text = preencherTemplate(text, { sessao: group.sessao, data: dateFormatted, horario: group.hora || '', escalados: escaladosList });
     
     setNoticeText(text);
     setSendNoticeWhatsApp(false);
@@ -287,7 +288,7 @@ const ManageScales = () => {
     let query = supabase
       .from('escalas')
       .select(`
-        id, data, hora_inicio, tipo_sessao, funcao, status_substituicao, justificativa_troca, compareceu, checkin_em, checkout_em, lembrete_enviado_em,
+        id, data, hora_inicio, tipo_sessao, funcao, status_substituicao, justificativa_troca, compareceu, checkin_em, checkout_em, lembrete_enviado_em, publicada,
         membro_original:membro_original_id ( id, nome, foto_url ),
         membro_substituto:membro_substituto_id ( id, nome, foto_url )
       `);
@@ -317,7 +318,8 @@ const ManageScales = () => {
     if (!error && data) {
       const grouped = data.reduce((acc: any, curr: any) => {
         const key = `${curr.data}|${curr.tipo_sessao}`;
-        if (!acc[key]) acc[key] = { data: curr.data, sessao: curr.tipo_sessao, hora: curr.hora_inicio?.slice(0, 5) || '', lembreteEnviado: !!curr.lembrete_enviado_em, slots: [] };
+        if (!acc[key]) acc[key] = { data: curr.data, sessao: curr.tipo_sessao, hora: curr.hora_inicio?.slice(0, 5) || '', lembreteEnviado: !!curr.lembrete_enviado_em, rascunho: false, slots: [] };
+        if (curr.publicada === false) acc[key].rascunho = true;
         acc[key].slots.push(curr);
         return acc;
       }, {});
@@ -635,10 +637,11 @@ const ManageScales = () => {
                     <div
                       key={idx}
                       onClick={() => handleEditSessao(esc)}
-                      className={`p-2 rounded-lg border transition-colors cursor-pointer group ${getSessaoStyles(esc.sessao).calendar}`}
+                      className={`p-2 rounded-lg border transition-colors cursor-pointer group ${getSessaoStyles(esc.sessao).calendar} ${esc.rascunho ? 'border-dashed opacity-70' : ''}`}
+                      title={esc.rascunho ? 'Rascunho: ainda não publicado para os técnicos' : undefined}
                     >
                       <div className="flex justify-between items-start mb-1">
-                        <span className="font-semibold text-xs leading-tight block">{esc.sessao}{esc.hora && <span className="font-normal opacity-80"> {esc.hora}</span>}</span>
+                        <span className="font-semibold text-xs leading-tight block">{esc.sessao}{esc.hora && <span className="font-normal opacity-80"> {esc.hora}</span>}{esc.rascunho && <span className="block font-normal italic opacity-90">rascunho</span>}</span>
                         {esc.data >= hojeStrGlobal && (
                           <button
                             onClick={(e) => {
@@ -715,8 +718,15 @@ const ManageScales = () => {
           <p className="text-gray-500 dark:text-gray-400 mt-1">Escale os técnicos de suporte das próximas sessões e acompanhe check-in/check-out.</p>
         </div>
         
-        <div className="flex items-center gap-3 w-full md:w-auto">
-          <button 
+        <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
+          <button
+            onClick={() => setIsBuilderOpen(true)}
+            className="flex-1 md:flex-none flex items-center justify-center px-4 py-2.5 bg-white dark:bg-gray-800 text-blue-700 dark:text-blue-400 border border-blue-200 dark:border-blue-800/60 font-medium rounded-xl hover:bg-blue-50 dark:hover:bg-blue-900/30 shadow-sm transition-colors"
+          >
+            <CalendarDays className="w-5 h-5 mr-2" />
+            Montar Mês
+          </button>
+          <button
             onClick={openMessagesModal}
             className="flex-1 md:flex-none flex items-center justify-center px-4 py-2.5 bg-purple-600 text-white font-medium rounded-xl hover:bg-purple-700 shadow-sm transition-colors"
           >
@@ -872,12 +882,13 @@ const ManageScales = () => {
                   <h3 className="font-bold text-gray-900 dark:text-gray-50 dark:text-gray-100 capitalize">{formatData(group.data)}</h3>
                   <p className={`text-sm font-bold ${styles.text}`}>
                     {group.sessao}{group.hora && <span className="font-medium"> · {group.hora}</span>}
+                    {group.rascunho && <span className="ml-2 text-[10px] font-bold text-gray-600 bg-gray-100 border border-dashed border-gray-400 dark:bg-gray-700 dark:text-gray-300 px-1.5 py-0.5 rounded" title="Ainda não publicado para os técnicos. Publique em Montar Mês.">Rascunho</span>}
                     {group.lembreteEnviado && <span className="ml-2 text-[10px] font-bold text-green-700 bg-green-100 dark:bg-green-900/40 dark:text-green-300 px-1.5 py-0.5 rounded">Lembrete enviado</span>}
                   </p>
                 </div>
                 <div className="flex gap-2">
-                  {group.data >= hojeStrGlobal && (
-                    <button 
+                  {group.data >= hojeStrGlobal && !group.rascunho && (
+                    <button
                       onClick={() => handleOpenNoticeModal(group)}
                       className={`text-xs font-semibold text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-800/50 bg-blue-50 hover:bg-blue-100 dark:bg-blue-900/20 dark:hover:bg-blue-900/40 px-3 py-1.5 rounded-lg transition-colors shadow-sm flex items-center justify-center`}
                       title="Notificar Escalados"
@@ -1036,6 +1047,14 @@ const ManageScales = () => {
             </div>
           )})}
         </div>
+      )}
+
+      {isBuilderOpen && (
+        <MonthlyScaleBuilder
+          mesInicial={currentMonth}
+          membros={membros}
+          onClose={() => { setIsBuilderOpen(false); fetchEscalas(); }}
+        />
       )}
 
       {isModalOpen && (
@@ -1531,7 +1550,7 @@ const ManageScales = () => {
                   Defina o template de mensagem para cada tipo de sessão.
                 </p>
                 <div className="bg-gray-50 dark:bg-gray-700/50 p-4 rounded-xl mt-3 text-sm text-gray-600 dark:text-gray-300">
-                  <span className="font-bold block mb-2">Variáveis disponíveis (clique para inserir):</span>
+                  <span className="font-bold block mb-2">Variáveis disponíveis (clique para inserir; os valores saem em negrito):</span>
                   <div className="flex flex-wrap gap-2">
                     <button onClick={() => insertTag('{{sessao}}')} className="inline-flex items-center px-2 py-1.5 rounded-lg bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300 hover:bg-purple-200 dark:hover:bg-purple-900/60 transition-colors cursor-pointer border border-purple-200 dark:border-purple-800">
                       <code>{`{{sessao}}`}</code><span className="ml-2 text-xs opacity-80 hidden sm:inline">- Nome da sessão</span>
@@ -1579,6 +1598,19 @@ const ManageScales = () => {
                     className="w-full h-40 p-4 border border-gray-300 dark:border-gray-600 rounded-2xl bg-gray-50 dark:bg-gray-700/50 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-all text-sm custom-scrollbar"
                     placeholder="Digite a mensagem padrão..."
                   />
+                  {messagesForm[sessao] && (
+                    <div className="p-4 rounded-2xl border border-dashed border-purple-200 dark:border-purple-800/60 bg-white dark:bg-gray-800">
+                      <span className="block text-[11px] font-bold uppercase tracking-wide text-purple-600 dark:text-purple-400 mb-2">Prévia (como chega no WhatsApp e no app)</span>
+                      <p className="text-sm whitespace-pre-wrap leading-relaxed text-gray-700 dark:text-gray-200">
+                        <TextoFormatado texto={preencherTemplate(messagesForm[sessao], {
+                          sessao,
+                          data: new Date().toLocaleDateString('pt-BR'),
+                          horario: '08:00',
+                          escalados: FUNCOES_DISPONIVEIS.map(f => `• ${f}: ${negrito('Nome do Técnico')}`).join('\n')
+                        })} />
+                      </p>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

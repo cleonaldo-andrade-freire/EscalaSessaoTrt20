@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import TextoFormatado from '../../components/TextoFormatado';
 import { supabase } from '../../services/supabaseClient';
 import { sendWhatsApp } from '../../services/whatsappService';
 import MemberLayout from '../../layouts/MemberLayout';
@@ -277,7 +278,7 @@ const MemberNotices = () => {
                     
                     {isExpanded && (
                       <p className={`text-sm whitespace-pre-wrap leading-relaxed mt-2 ${aviso.lido ? 'text-gray-500 dark:text-gray-400' : (aviso.titulo ? 'text-gray-700 dark:text-gray-200' : 'text-gray-800 dark:text-gray-100 font-medium')}`}>
-                        {aviso.mensagem}
+                        <TextoFormatado texto={aviso.mensagem} />
                       </p>
                     )}
                     <p className="text-[10px] font-bold text-gray-400 mt-2 uppercase tracking-wide">

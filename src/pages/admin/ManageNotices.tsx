@@ -1,4 +1,5 @@
 import toast from 'react-hot-toast';
+import TextoFormatado from '../../components/TextoFormatado';
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../../services/supabaseClient';
 import { sendWhatsApp } from '../../services/whatsappService';
@@ -447,7 +448,7 @@ const ManageNotices = () => {
                             </div>
                           )}
                           <div className="text-sm font-medium text-gray-700 dark:text-gray-300 max-w-md line-clamp-2">
-                            {notice.mensagem}
+                            <TextoFormatado texto={notice.mensagem} />
                           </div>
                         </div>
                       </div>

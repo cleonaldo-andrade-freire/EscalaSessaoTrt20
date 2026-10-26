@@ -106,13 +106,14 @@ serve(async (req) => {
 
       const horario = String(slots[0].hora_inicio).slice(0, 5);
       const escaladosLinhas = slots
-        .map((slot: any) => `• ${slot.funcao}: ${membrosNomesMap[membroEfetivo(slot)] ?? 'Técnico'}`)
+        .map((slot: any) => `• ${slot.funcao}: *${membrosNomesMap[membroEfetivo(slot)] ?? 'Técnico'}*`)
         .join('\n');
 
+      // Valores em negrito (*texto*, padrão do WhatsApp; o app exibe igual)
       const text = (templatesMap[sessao] ?? MENSAGEM_FALLBACK)
-        .replace(/\{\{sessao\}\}/g, sessao)
-        .replace(/\{\{data\}\}/g, dataBr)
-        .replace(/\{\{horario\}\}/g, horario)
+        .replace(/\{\{sessao\}\}/g, `*${sessao}*`)
+        .replace(/\{\{data\}\}/g, `*${dataBr}*`)
+        .replace(/\{\{horario\}\}/g, `*${horario}*`)
         .replace(/\{\{escalados\}\}/g, escaladosLinhas);
 
       console.log(`[send-session-reminders] ${sessao} ${horario}: ${uniqueMembroIds.length} técnico(s)`);

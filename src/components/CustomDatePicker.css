@@ -97,3 +97,9 @@
   background-color: #4b5563 !important;
   color: #fff !important;
 }
+
+/* O popup é renderizado num portal no <body> para não ser cortado por modais
+   com overflow; precisa ficar acima deles (z-50/z-60). */
+.react-datepicker-popper {
+  z-index: 80 !important;
+}
