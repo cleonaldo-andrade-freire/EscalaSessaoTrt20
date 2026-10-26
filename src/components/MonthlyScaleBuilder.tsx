@@ -704,8 +704,9 @@ Confira os detalhes no app.`;
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-gray-100 dark:bg-gray-900 overflow-y-auto">
-      <div className="max-w-6xl mx-auto px-4 py-4 sm:py-6 pb-28 space-y-4">
+    <div className="fixed inset-0 z-50 bg-gray-100 dark:bg-gray-900 flex flex-col">
+      <div className="flex-1 min-h-0 overflow-y-auto">
+      <div className="max-w-6xl mx-auto px-4 py-4 sm:py-6 space-y-4">
         {/* Cabeçalho */}
         <div className="flex items-start justify-between gap-3">
           <div>
@@ -869,9 +870,10 @@ Confira os detalhes no app.`;
           </>
         )}
       </div>
+      </div>
 
-      {/* Barra de publicação */}
-      <div className="fixed bottom-0 inset-x-0 bg-white/95 dark:bg-gray-800/95 backdrop-blur border-t border-gray-200 dark:border-gray-700">
+      {/* Barra de publicação (fora da área rolável, para não cobrir o conteúdo) */}
+      <div className="shrink-0 bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700">
         <div className="max-w-6xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-3">
           <p className="text-sm text-gray-600 dark:text-gray-300">
             <strong>{rascunhos.length}</strong> {rascunhos.length === 1 ? 'dia em rascunho' : 'dias em rascunho'} em {nomeMesTitulo}
