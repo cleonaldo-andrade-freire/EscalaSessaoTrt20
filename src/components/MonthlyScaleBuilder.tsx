@@ -46,6 +46,13 @@ const CORES_SESSAO: Record<string, { chip: string; dot: string; tab: string }> =
 };
 const COR_PADRAO = { chip: 'bg-gray-700 text-white border-gray-400', dot: 'bg-gray-400', tab: 'bg-gray-700 text-white' };
 
+const SIGLA_SESSAO: Record<string, string> = { '1ª Turma': '1ª T', '2ª Turma': '2ª T', 'Pleno': 'Pleno' };
+
+const ordemSessao = (s: string) => {
+  const i = SESSOES_DISPONIVEIS.indexOf(s);
+  return i === -1 ? 999 : i;
+};
+
 const deslocarMes = (mes: string, delta: number) => {
   const [ano, m] = mes.split('-').map(Number);
   const d = new Date(ano, m - 1 + delta, 1);
@@ -66,6 +73,7 @@ const MonthlyScaleBuilder: React.FC<MonthlyScaleBuilderProps> = ({ mesInicial, m
   const [funcao, setFuncao] = useState(FUNCOES_DISPONIVEIS[0]);
   const [membroId, setMembroId] = useState('');
   const [horas, setHoras] = useState<Record<string, string>>({});
+  const [visao, setVisao] = useState<'sessao' | 'todas'>('sessao');
 
   const [escalas, setEscalas] = useState<EscalaMes[]>([]);
   const [ausencias, setAusencias] = useState<Record<string, Record<string, string>>>({});
@@ -82,6 +90,7 @@ const MonthlyScaleBuilder: React.FC<MonthlyScaleBuilderProps> = ({ mesInicial, m
   const membrosAtivos = membros.filter(m => m.ativo !== false);
   const nomeMembro = (id: string) => membros.find(m => m.id === id)?.nome || 'Técnico';
   const nomeMes = new Intl.DateTimeFormat('pt-BR', { month: 'long', year: 'numeric' }).format(new Date(mes + '-01T12:00:00'));
+  const nomeMesTitulo = nomeMes.charAt(0).toUpperCase() + nomeMes.slice(1);
 
   // Horário padrão de cada sessão = o último usado para ela
   useEffect(() => {
@@ -261,10 +270,9 @@ Bom trabalho!`;
       setEscalas(prev => prev.map(e => (ids.includes(e.id) ? { ...e, publicada: true } : e)));
 
       const mensagens = Object.entries(rascunhosPorMembro).map(([id, itens]) => ({ id, texto: montarMensagem(id, itens) }));
-      const tituloMes = nomeMes.charAt(0).toUpperCase() + nomeMes.slice(1);
 
       const { error: avisoError } = await supabase.from('avisos').insert(
-        mensagens.map(m => ({ membro_id: m.id, titulo: `Escala de ${tituloMes} publicada`, mensagem: m.texto, lido: false }))
+        mensagens.map(m => ({ membro_id: m.id, titulo: `Escala de ${nomeMesTitulo} publicada`, mensagem: m.texto, lido: false }))
       );
 
       let falhasWhatsApp = 0;
@@ -310,6 +318,22 @@ Bom trabalho!`;
       setProcessando(false);
     }
   };
+
+  // Marcação dentro do dia: sessão + horário na 1ª linha, técnico na 2ª
+  const renderMarcacao = (e: EscalaMes, cores: string, esmaecido: boolean) => (
+    <span
+      key={e.id}
+      className={`block rounded-md px-1 sm:px-1.5 py-0.5 sm:py-1 border leading-tight ${cores} ${e.publicada ? '' : 'border-dashed'} ${esmaecido ? 'opacity-30' : ''}`}
+      title={`${e.tipo_sessao} · ${nomeMembro(e.membro_original_id)} · ${e.hora_inicio.slice(0, 5)} · ${e.publicada ? 'publicada' : 'rascunho'}`}
+    >
+      <span className="flex items-center gap-1 text-[9px] sm:text-[10px] font-medium opacity-85">
+        {e.publicada && <Lock className="w-2.5 h-2.5 shrink-0" />}
+        <span className="truncate"><span className="sm:hidden">{SIGLA_SESSAO[e.tipo_sessao] || e.tipo_sessao}</span><span className="hidden sm:inline">{e.tipo_sessao}</span></span>
+        <span className="hidden md:inline ml-auto shrink-0">{e.hora_inicio.slice(0, 5)}</span>
+      </span>
+      <span className="block truncate text-[10px] sm:text-[11px] font-bold">{primeiroNome(nomeMembro(e.membro_original_id))}</span>
+    </span>
+  );
 
   const renderCalendario = () => {
     const [ano, m] = mes.split('-').map(Number);
@@ -363,7 +387,7 @@ Bom trabalho!`;
                 <div className="flex items-center justify-between">
                   <span className={`text-xs sm:text-sm font-bold ${data === hoje ? 'bg-blue-600 text-white rounded-full w-6 h-6 grid place-items-center' : 'text-gray-700 dark:text-gray-200'}`}>{dia}</span>
                   <span className="flex gap-0.5">
-                    {outrasSessoes.map(e => (
+                    {visao === 'sessao' && outrasSessoes.map(e => (
                       <span
                         key={e.id}
                         className={`w-1.5 h-1.5 rounded-full ${(CORES_SESSAO[e.tipo_sessao] || COR_PADRAO).dot}`}
@@ -375,24 +399,31 @@ Bom trabalho!`;
 
                 {salvando ? (
                   <Loader2 className="w-4 h-4 animate-spin text-blue-500 mx-auto mt-1" />
+                ) : visao === 'todas' ? (
+                  <>
+                    {[...(porDia[data] || [])]
+                      .sort((a, b) => ordemSessao(a.tipo_sessao) - ordemSessao(b.tipo_sessao))
+                      .map(e => renderMarcacao(
+                        e,
+                        (CORES_SESSAO[e.tipo_sessao] || COR_PADRAO).chip,
+                        !!membroId && e.membro_original_id !== membroId
+                      ))}
+                    {motivoAusencia && !passado && (
+                      <span className="text-[10px] font-semibold text-amber-700 dark:text-amber-400">{primeiroNome(nomeMembro(membroId))} ausente</span>
+                    )}
+                    {!slot && !passado && membroId && !motivoAusencia && (
+                      <span className="hidden sm:group-hover:block text-[11px] text-gray-400 dark:text-gray-500">+ {primeiroNome(nomeMembro(membroId))} ({SIGLA_SESSAO[sessao] || sessao})</span>
+                    )}
+                  </>
                 ) : slot ? (
-                  <span
-                    className={`flex items-center gap-1 rounded-md px-1 sm:px-1.5 py-0.5 sm:py-1 text-[10px] sm:text-[11px] font-semibold border ${
-                      doSelecionado ? cor.chip : 'bg-gray-100 text-gray-700 border-gray-300 dark:bg-gray-700 dark:text-gray-200 dark:border-gray-500'
-                    } ${slot.publicada ? '' : 'border-dashed'}`}
-                    title={`${nomeMembro(slot.membro_original_id)} · ${slot.hora_inicio.slice(0, 5)} · ${slot.publicada ? 'publicada' : 'rascunho'}`}
-                  >
-                    {slot.publicada && <Lock className="w-3 h-3 shrink-0" />}
-                    <span className="truncate">{primeiroNome(nomeMembro(slot.membro_original_id))}</span>
-                    <span className="hidden md:inline ml-auto font-normal opacity-75">{slot.hora_inicio.slice(0, 5)}</span>
-                  </span>
+                  renderMarcacao(slot, doSelecionado ? cor.chip : 'bg-gray-100 text-gray-700 border-gray-300 dark:bg-gray-700 dark:text-gray-200 dark:border-gray-500', false)
                 ) : motivoAusencia && !passado ? (
                   <span className="text-[10px] font-semibold text-amber-700 dark:text-amber-400">Ausente</span>
                 ) : !passado && membroId ? (
                   <span className="hidden sm:group-hover:block text-[11px] text-gray-400 dark:text-gray-500">+ {primeiroNome(nomeMembro(membroId))}</span>
                 ) : null}
 
-                {tecnicoEmOutraSessao && !passado && (
+                {visao === 'sessao' && tecnicoEmOutraSessao && !passado && (
                   <span className="hidden sm:flex items-center gap-0.5 text-[10px] text-amber-700 dark:text-amber-400 truncate" title={`${primeiroNome(nomeMembro(membroId))} também está na ${tecnicoEmOutraSessao.tipo_sessao} neste dia`}>
                     <AlertTriangle className="w-3 h-3 shrink-0" /> {tecnicoEmOutraSessao.tipo_sessao}
                   </span>
@@ -401,6 +432,53 @@ Bom trabalho!`;
             );
           })}
         </div>
+      </div>
+    );
+  };
+
+  // Quadro técnico × sessão com a quantidade de dias no mês (rascunho + publicadas)
+  const renderResumo = () => {
+    const linhas = membros
+      .filter(m => m.ativo !== false || diasPorMembro[m.id])
+      .map(m => {
+        const porSessao: Record<string, number> = {};
+        escalas.forEach(e => {
+          if (e.membro_original_id === m.id) porSessao[e.tipo_sessao] = (porSessao[e.tipo_sessao] || 0) + 1;
+        });
+        return { membro: m, porSessao, total: diasPorMembro[m.id] || 0 };
+      })
+      .sort((a, b) => b.total - a.total || a.membro.nome.localeCompare(b.membro.nome));
+
+    return (
+      <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl shadow-sm overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-gray-50 dark:bg-gray-700/50 text-xs font-bold text-gray-500 dark:text-gray-400 uppercase">
+              <th className="text-left px-4 py-2.5">Técnico · {nomeMesTitulo}</th>
+              {SESSOES_DISPONIVEIS.map(s => (
+                <th key={s} className="px-3 py-2.5 text-center whitespace-nowrap">
+                  <span className={`inline-block w-2 h-2 rounded-sm mr-1.5 ${(CORES_SESSAO[s] || COR_PADRAO).dot}`} />{s}
+                </th>
+              ))}
+              <th className="px-4 py-2.5 text-center">Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {linhas.map(({ membro, porSessao, total }) => (
+              <tr
+                key={membro.id}
+                onClick={() => setMembroId(membro.id === membroId ? '' : membro.id)}
+                className={`border-t border-gray-100 dark:border-gray-700 cursor-pointer transition-colors ${membro.id === membroId ? 'bg-blue-50 dark:bg-blue-900/20' : 'hover:bg-gray-50 dark:hover:bg-gray-700/40'}`}
+              >
+                <td className="px-4 py-2 font-medium text-gray-800 dark:text-gray-100">{membro.nome}</td>
+                {SESSOES_DISPONIVEIS.map(s => (
+                  <td key={s} className="px-3 py-2 text-center text-gray-600 dark:text-gray-300">{porSessao[s] || <span className="text-gray-300 dark:text-gray-600">–</span>}</td>
+                ))}
+                <td className="px-4 py-2 text-center font-bold text-gray-800 dark:text-gray-100">{total}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     );
   };
@@ -430,7 +508,7 @@ Bom trabalho!`;
                 <button onClick={() => setMes(deslocarMes(mes, -1))} className="p-1.5 rounded-lg text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
                   <ChevronLeft className="w-5 h-5" />
                 </button>
-                <span className="font-bold text-gray-800 dark:text-gray-100 capitalize w-40 text-center">{nomeMes}</span>
+                <span className="font-bold text-gray-800 dark:text-gray-100 w-44 text-center">{nomeMesTitulo}</span>
                 <button onClick={() => setMes(deslocarMes(mes, 1))} className="p-1.5 rounded-lg text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
                   <ChevronRight className="w-5 h-5" />
                 </button>
@@ -462,6 +540,23 @@ Bom trabalho!`;
                 onChange={e => setHoras(prev => ({ ...prev, [sessao]: e.target.value }))}
                 className="border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 dark:text-white rounded-xl px-3 py-1.5 focus:ring-blue-500 focus:border-blue-500"
               />
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1.5">Exibir</label>
+              <div className="flex bg-gray-100 dark:bg-gray-700/80 p-1 rounded-xl">
+                {([['sessao', 'Só esta sessão'], ['todas', 'Todas as sessões']] as const).map(([valor, rotulo]) => (
+                  <button
+                    key={valor}
+                    onClick={() => setVisao(valor)}
+                    className={`px-3 py-1.5 text-sm font-semibold rounded-lg transition-colors ${
+                      visao === valor ? 'bg-white dark:bg-gray-800 text-blue-700 dark:text-blue-400 shadow-sm' : 'text-gray-500 dark:text-gray-300 hover:text-gray-800 dark:hover:text-gray-100'
+                    }`}
+                  >
+                    {rotulo}
+                  </button>
+                ))}
+              </div>
             </div>
 
             {FUNCOES_DISPONIVEIS.length > 1 && (
@@ -514,24 +609,38 @@ Bom trabalho!`;
           <span className="flex items-center gap-1.5"><span className="w-4 h-3 rounded border border-dashed border-gray-500" /> rascunho</span>
           <span className="flex items-center gap-1.5"><Lock className="w-3 h-3" /> publicada (altere por "Editar Sessão")</span>
           <span className="flex items-center gap-1.5"><span className="w-4 h-3 rounded bg-[repeating-linear-gradient(135deg,transparent_0_3px,rgba(245,158,11,0.5)_3px_6px)]" /> ausência do técnico</span>
-          <span className="flex items-center gap-1.5">
-            {SESSOES_DISPONIVEIS.map(s => <span key={s} className={`w-1.5 h-1.5 rounded-full ${(CORES_SESSAO[s] || COR_PADRAO).dot}`} />)}
-            outras sessões no dia
-          </span>
+          {visao === 'sessao' ? (
+            <span className="flex items-center gap-1.5">
+              {SESSOES_DISPONIVEIS.map(s => <span key={s} className={`w-1.5 h-1.5 rounded-full ${(CORES_SESSAO[s] || COR_PADRAO).dot}`} />)}
+              outras sessões no dia
+            </span>
+          ) : (
+            <>
+              {SESSOES_DISPONIVEIS.map(s => (
+                <span key={s} className="flex items-center gap-1.5"><span className={`w-2.5 h-2.5 rounded-sm ${(CORES_SESSAO[s] || COR_PADRAO).dot}`} /> {s}</span>
+              ))}
+              <span>· técnico selecionado em destaque; clique continua marcando a sessão {sessao}</span>
+            </>
+          )}
         </div>
 
         {loading ? (
           <div className="flex justify-center p-12">
             <Loader2 className="w-8 h-8 animate-spin text-blue-600 dark:text-blue-400" />
           </div>
-        ) : renderCalendario()}
+        ) : (
+          <>
+            {renderCalendario()}
+            {renderResumo()}
+          </>
+        )}
       </div>
 
       {/* Barra de publicação */}
       <div className="fixed bottom-0 inset-x-0 bg-white/95 dark:bg-gray-800/95 backdrop-blur border-t border-gray-200 dark:border-gray-700">
         <div className="max-w-6xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-3">
           <p className="text-sm text-gray-600 dark:text-gray-300">
-            <strong>{rascunhos.length}</strong> {rascunhos.length === 1 ? 'dia em rascunho' : 'dias em rascunho'} em <span className="capitalize">{nomeMes}</span>
+            <strong>{rascunhos.length}</strong> {rascunhos.length === 1 ? 'dia em rascunho' : 'dias em rascunho'} em {nomeMesTitulo}
             <span className="hidden sm:inline text-gray-400"> · invisíveis para os técnicos até publicar</span>
           </p>
           <div className="flex gap-2 ml-auto">
@@ -558,7 +667,7 @@ Bom trabalho!`;
         <div className="fixed inset-0 bg-black/40 z-[70] flex items-center justify-center p-4 backdrop-blur-sm">
           <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-xl w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden">
             <div className="p-6 border-b border-gray-100 dark:border-gray-700">
-              <h3 className="font-bold text-lg text-gray-900 dark:text-gray-100">Publicar escala de <span className="capitalize">{nomeMes}</span></h3>
+              <h3 className="font-bold text-lg text-gray-900 dark:text-gray-100">Publicar escala de {nomeMesTitulo}</h3>
               <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
                 {rascunhosAPublicar.length} {rascunhosAPublicar.length === 1 ? 'dia passa' : 'dias passam'} a ser visíveis e cada técnico recebe um aviso com os seus dias.
               </p>
@@ -609,7 +718,7 @@ Bom trabalho!`;
             </div>
             <h3 className="font-bold text-lg text-gray-900 dark:text-gray-100">Descartar rascunhos?</h3>
             <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">
-              Os {rascunhos.length} dias em rascunho de <span className="capitalize">{nomeMes}</span> serão apagados. As escalas já publicadas não são afetadas.
+              Os {rascunhos.length} dias em rascunho de {nomeMesTitulo} serão apagados. As escalas já publicadas não são afetadas.
             </p>
             <div className="flex gap-3 justify-center mt-6">
               <button onClick={() => setConfirmDescartar(false)} disabled={processando} className="px-4 py-2.5 font-medium text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-xl transition-colors">
