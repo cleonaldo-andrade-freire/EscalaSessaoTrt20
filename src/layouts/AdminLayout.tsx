@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../services/supabaseClient';
-import { LayoutDashboard, Users, CalendarDays, LogOut, Bell, CalendarOff, UserX, Sun, Moon, ClipboardList } from 'lucide-react'; 
+import { LayoutDashboard, Users, CalendarDays, LogOut, Bell, CalendarOff, UserX, Sun, Moon, ClipboardList, CalendarCheck } from 'lucide-react';
 import { getGreeting } from '../utils/greeting';
 
 const AdminLayout = ({ children }: { children: React.ReactNode }) => {
@@ -113,6 +113,10 @@ const AdminLayout = ({ children }: { children: React.ReactNode }) => {
           <a href="/admin/relatorio-faltas" className="flex items-center px-4 py-3 text-sm font-medium text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 hover:text-red-600 dark:hover:text-red-400 transition-colors">
             <UserX className="w-5 h-5 mr-3 text-red-500 dark:text-red-400" />
             Relatório de Faltas
+          </a>
+          <a href="/admin/google-agenda" className="flex items-center px-4 py-3 text-sm font-medium text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
+            <CalendarCheck className="w-5 h-5 mr-3" />
+            Google Agenda
           </a>
         </nav>
 

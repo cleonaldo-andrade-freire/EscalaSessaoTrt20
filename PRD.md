@@ -87,6 +87,7 @@ Gerador automático de escala mensal, rascunho/publicação mensal, modo troca v
 | Aviso no app (`avisos`) | Lembretes, permutas, comunicados |
 | WhatsApp (Edge Function → n8n) | Avisos, permutas e lembrete 20 min antes da sessão (`send-session-reminders` via pg_cron a cada minuto) |
 | Push (FCM) | Infraestrutura presente, não ativada na UI |
+| Google Agenda (opcional) | Agenda compartilhada atualizada ao publicar o mês e a cada mudança em escala publicada; conexão configurada em Admin → Google Agenda |
 
 ## 6. Domínio
 
