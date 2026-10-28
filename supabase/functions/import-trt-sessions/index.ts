@@ -8,7 +8,9 @@ import { getGoogleAccessToken } from '../_shared/google.ts';
 // sessões PRESENCIAIS de um período, já no formato da escala:
 //   SP 1T → 1ª Turma · SP 2T → 2ª Turma · SP JP / SP AP → Pleno
 // O horário vem do título ("9h", "9h05"). JP e AP no mesmo dia viram uma só
-// sessão Pleno, no horário mais cedo. Só leitura: quem grava é o app.
+// sessão Pleno, no horário mais cedo. Um técnico atende o dia todo: havendo
+// mais de uma sessão no dia, vale a Turma (1ª antes da 2ª) e as demais ficam
+// só como complementares na descrição. Só leitura: quem grava é o app.
 //
 // Leitura pela API do Google Calendar com a Service Account do Google Agenda
 // (Admin → Google Agenda): agenda pública pode ser lida por qualquer conta.
@@ -180,8 +182,18 @@ serve(async (req) => {
       }
     }
 
-    const sessoes = [...porSessao.values()].sort((a, b) =>
-      (a.data + a.hora_inicio + a.tipo_sessao).localeCompare(b.data + b.hora_inicio + b.tipo_sessao));
+    // Uma sessão por dia: a de maior prioridade vale; as outras são complementares
+    const PRIORIDADE = ['1ª Turma', '2ª Turma', 'Pleno'];
+    const porDia = new Map<string, Prevista[]>();
+    for (const s of porSessao.values()) porDia.set(s.data, [...(porDia.get(s.data) ?? []), s]);
+    const sessoes = [...porDia.values()].map(doDia => {
+      const [principal, ...complementares] = doDia.sort((a, b) => PRIORIDADE.indexOf(a.tipo_sessao) - PRIORIDADE.indexOf(b.tipo_sessao));
+      if (complementares.length === 0) return principal;
+      return {
+        ...principal,
+        descricao: `${principal.descricao} · complementar: ${complementares.map(c => `${c.tipo_sessao} (${c.descricao})`).join(', ')}`.slice(0, 300),
+      };
+    }).sort((a, b) => a.data.localeCompare(b.data));
     return jsonResponse({ sessoes });
   } catch (error: any) {
     console.error('[import-trt-sessions] Error:', error);
