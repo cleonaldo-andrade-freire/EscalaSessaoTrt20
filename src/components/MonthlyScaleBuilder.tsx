@@ -8,7 +8,7 @@ import { ChevronLeft, ChevronRight, X, Lock, Send, Trash2, Loader2, CalendarChec
 import { supabase } from '../services/supabaseClient';
 import { sendWhatsApp } from '../services/whatsappService';
 import { buscarSessoesTRT, SessaoTRT } from '../services/trtSessoesService';
-import { SESSOES_DISPONIVEIS, FUNCOES_DISPONIVEIS, LEMBRETE_ANTECEDENCIA_MIN } from '../constants';
+import { SESSOES_DISPONIVEIS, FUNCOES_DISPONIVEIS, LEMBRETE_ANTECEDENCIA_MIN, HORA_PADRAO_SESSAO } from '../constants';
 import { getLocalDateStr } from '../utils/date';
 import { negrito } from '../utils/mensagem';
 
@@ -130,7 +130,10 @@ const MonthlyScaleBuilder: React.FC<MonthlyScaleBuilderProps> = ({ mesInicial, m
   const [sessao, setSessao] = useState(SESSOES_DISPONIVEIS[0]);
   const [funcao, setFuncao] = useState(FUNCOES_DISPONIVEIS[0]);
   const [membroId, setMembroId] = useState('');
-  const [horas, setHoras] = useState<Record<string, string>>({});
+  // Horário de início por sessão; começa no padrão e o admin pode mudar
+  const [horas, setHoras] = useState<Record<string, string>>(
+    () => Object.fromEntries(SESSOES_DISPONIVEIS.map(s => [s, HORA_PADRAO_SESSAO]))
+  );
   const [visao, setVisao] = useState<'sessao' | 'todas'>('sessao');
 
   const [arrastando, setArrastando] = useState<EscalaMes | null>(null);
@@ -161,21 +164,6 @@ const MonthlyScaleBuilder: React.FC<MonthlyScaleBuilderProps> = ({ mesInicial, m
   const nomeMes = new Intl.DateTimeFormat('pt-BR', { month: 'long', year: 'numeric' }).format(new Date(mes + '-01T12:00:00'));
   const nomeMesTitulo = nomeMes.charAt(0).toUpperCase() + nomeMes.slice(1);
 
-  // Horário padrão de cada sessão = o último usado para ela
-  useEffect(() => {
-    supabase
-      .from('escalas')
-      .select('tipo_sessao, hora_inicio')
-      .order('data', { ascending: false })
-      .limit(60)
-      .then(({ data }) => {
-        const padrao: Record<string, string> = {};
-        data?.forEach((e: any) => {
-          if (!padrao[e.tipo_sessao] && e.hora_inicio) padrao[e.tipo_sessao] = e.hora_inicio.slice(0, 5);
-        });
-        setHoras(prev => ({ ...padrao, ...prev }));
-      });
-  }, []);
 
   const carregarMes = async (isAtual: () => boolean = () => true) => {
     setLoading(true);

@@ -27,6 +27,9 @@ export const STATUS_SUBSTITUICAO = {
 // feito pela Edge Function send-session-reminders + pg_cron.
 export const LEMBRETE_ANTECEDENCIA_MIN = 20;
 
+// Horário de início padrão das sessões (pode ser alterado em cada escala)
+export const HORA_PADRAO_SESSAO = '09:00';
+
 export const MENSAGEM_PADRAO_SESSAO = `Olá, equipe! 👋
 
 ⏰ Lembrete da escala de suporte para a sessão da {{sessao}} de {{data}}, com início às {{horario}}.

@@ -8,7 +8,7 @@ import CustomDatePicker from '../../components/CustomDatePicker';
 import MonthlyScaleBuilder from '../../components/MonthlyScaleBuilder';
 import TextoFormatado from '../../components/TextoFormatado';
 import { negrito, preencherTemplate } from '../../utils/mensagem';
-import { SESSOES_DISPONIVEIS, FUNCOES_DISPONIVEIS, MENSAGEM_PADRAO_SESSAO, LEMBRETE_ANTECEDENCIA_MIN } from '../../constants';
+import { SESSOES_DISPONIVEIS, FUNCOES_DISPONIVEIS, MENSAGEM_PADRAO_SESSAO, LEMBRETE_ANTECEDENCIA_MIN, HORA_PADRAO_SESSAO } from '../../constants';
 import { registrarCheckin, registrarCheckout } from '../../services/presencaService';
 import { getLocalDateStr, formatHora, formatDuracao, getHoraAtual, combinarDataHora } from '../../utils/date';
 
@@ -21,7 +21,7 @@ const ManageScales = () => {
   const [formData, setFormData] = useState({
     data: '',
     tipo_sessao: '',
-    hora_inicio: '',
+    hora_inicio: HORA_PADRAO_SESSAO,
     membrosPorFuncao: {} as Record<string, string>
   });
   
@@ -372,7 +372,7 @@ const ManageScales = () => {
   };
 
   const handleOpenNewScale = () => {
-    setFormData({ data: '', tipo_sessao: '', hora_inicio: '', membrosPorFuncao: {} });
+    setFormData({ data: '', tipo_sessao: '', hora_inicio: HORA_PADRAO_SESSAO, membrosPorFuncao: {} });
     setScaleIds({});
     setEditingData({ isEditing: false });
     setError('');
@@ -512,7 +512,7 @@ const ManageScales = () => {
       }
       
       setIsModalOpen(false);
-      setFormData({ data: '', tipo_sessao: '', hora_inicio: '', membrosPorFuncao: {} });
+      setFormData({ data: '', tipo_sessao: '', hora_inicio: HORA_PADRAO_SESSAO, membrosPorFuncao: {} });
       setScaleIds({});
       setEditingData({ isEditing: false });
       setFormDateAusencias({});
