@@ -4,9 +4,10 @@ import {
   DndContext, DragOverlay, MouseSensor, TouchSensor, useSensor, useSensors, useDraggable, useDroppable,
   type DragStartEvent, type DragEndEvent
 } from '@dnd-kit/core';
-import { ChevronLeft, ChevronRight, X, Lock, Send, Trash2, Loader2, CalendarCheck, AlertTriangle, ArrowRightLeft, MoveRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight, X, Lock, Send, Trash2, Loader2, CalendarCheck, AlertTriangle, ArrowRightLeft, MoveRight, Download } from 'lucide-react';
 import { supabase } from '../services/supabaseClient';
 import { sendWhatsApp } from '../services/whatsappService';
+import { buscarSessoesTRT, SessaoTRT } from '../services/trtSessoesService';
 import { SESSOES_DISPONIVEIS, FUNCOES_DISPONIVEIS, LEMBRETE_ANTECEDENCIA_MIN } from '../constants';
 import { getLocalDateStr } from '../utils/date';
 import { negrito } from '../utils/mensagem';
@@ -20,6 +21,9 @@ import { negrito } from '../utils/mensagem';
 // Uma marcação pode ser arrastada para outro dia: se o dia já tem a mesma
 // sessão, os dois técnicos trocam; senão, a escala só muda de dia. Mexer em
 // escala publicada pede confirmação e avisa os técnicos afetados.
+// "Importar sessões do TRT" traz as sessões presenciais do calendário público
+// do tribunal para public.sessoes_previstas; elas aparecem como "a preencher"
+// e viram escala quando o admin escolhe o técnico.
 // ---------------------------------------------------------------------------
 
 interface MembroResumo {
@@ -40,6 +44,17 @@ interface EscalaMes {
   compareceu: boolean | null;
   status_substituicao: string;
 }
+
+interface Prevista {
+  id: string;
+  data: string;
+  tipo_sessao: string;
+  hora_inicio: string;
+  descricao: string | null;
+}
+
+// Item da prévia de importação
+type ItemImportacao = SessaoTRT & { situacao: 'nova' | 'atualizada' | 'igual' | 'escalada' };
 
 type Destino =
   | { tipo: 'mesmo' }
@@ -127,6 +142,9 @@ const MonthlyScaleBuilder: React.FC<MonthlyScaleBuilderProps> = ({ mesInicial, m
   );
 
   const [escalas, setEscalas] = useState<EscalaMes[]>([]);
+  const [previstas, setPrevistas] = useState<Prevista[]>([]);
+  const [importacao, setImportacao] = useState<{ itens: ItemImportacao[]; remover: Prevista[] } | null>(null);
+  const [importando, setImportando] = useState(false);
   const [ausencias, setAusencias] = useState<Record<string, Record<string, string>>>({});
   const [loading, setLoading] = useState(true);
   const [diasSalvando, setDiasSalvando] = useState<Set<string>>(new Set());
@@ -165,15 +183,17 @@ const MonthlyScaleBuilder: React.FC<MonthlyScaleBuilderProps> = ({ mesInicial, m
     const inicio = getLocalDateStr(new Date(ano, m - 1, 1));
     const fim = getLocalDateStr(new Date(ano, m, 0));
 
-    const [escRes, ausRes] = await Promise.all([
+    const [escRes, ausRes, prevRes] = await Promise.all([
       supabase.from('escalas').select(CAMPOS_ESCALA).gte('data', inicio).lte('data', fim),
       // Períodos que tocam o mês
       supabase.from('ausencias_programadas').select('membro_id, data_inicio, data_fim, motivo').lte('data_inicio', fim).gte('data_fim', inicio),
+      supabase.from('sessoes_previstas').select('id, data, tipo_sessao, hora_inicio, descricao').gte('data', inicio).lte('data', fim),
     ]);
     if (!isAtual()) return;
 
     if (escRes.error) toast.error('Erro ao carregar escalas: ' + escRes.error.message);
     setEscalas((escRes.data as EscalaMes[]) || []);
+    setPrevistas(((prevRes.data as Prevista[]) || []).map(p => ({ ...p, hora_inicio: p.hora_inicio.slice(0, 5) })));
 
     const mapa: Record<string, Record<string, string>> = {};
     ausRes.data?.forEach((a: any) => {
@@ -205,6 +225,16 @@ const MonthlyScaleBuilder: React.FC<MonthlyScaleBuilderProps> = ({ mesInicial, m
     return mapa;
   }, [escalas]);
 
+  const previstaPorSessao = useMemo(() => {
+    const mapa: Record<string, Prevista> = {};
+    previstas.forEach(p => { mapa[`${p.data}|${p.tipo_sessao}`] = p; });
+    return mapa;
+  }, [previstas]);
+
+  // Sessão prevista ainda sem nenhuma escala (de qualquer função) no dia
+  const temEscalaNaSessao = (data: string, tipo: string) => (porDia[data] || []).some(e => e.tipo_sessao === tipo);
+  const aPreencher = previstas.filter(p => p.data >= hoje && !temEscalaNaSessao(p.data, p.tipo_sessao));
+
   const diasPorMembro = useMemo(() => {
     const cont: Record<string, number> = {};
     escalas.forEach(e => { cont[e.membro_original_id] = (cont[e.membro_original_id] || 0) + 1; });
@@ -230,10 +260,13 @@ const MonthlyScaleBuilder: React.FC<MonthlyScaleBuilderProps> = ({ mesInicial, m
     });
   };
 
-  const handleClickDia = async (data: string) => {
+  // sessaoAlvo: clique numa sessão "a preencher" de outra sessão (visão "todas")
+  const handleClickDia = async (data: string, sessaoAlvo: string = sessao) => {
     if (arrastouRef.current || data < hoje || diasSalvando.has(data)) return;
 
-    const atual = porSlot[`${data}|${sessao}|${funcao}`];
+    // Sessão importada do TRT já traz o horário do dia
+    const hora = previstaPorSessao[`${data}|${sessaoAlvo}`]?.hora_inicio || horas[sessaoAlvo] || '';
+    const atual = porSlot[`${data}|${sessaoAlvo}|${funcao}`];
     if (atual?.publicada) {
       toast('Escala publicada: arraste-a para outro dia ou use "Editar Sessão".', { icon: '🔒' });
       return;
@@ -282,7 +315,7 @@ const MonthlyScaleBuilder: React.FC<MonthlyScaleBuilderProps> = ({ mesInicial, m
           .insert({
             data,
             hora_inicio: hora,
-            tipo_sessao: sessao,
+            tipo_sessao: sessaoAlvo,
             funcao,
             membro_original_id: membroId,
             status_substituicao: 'Nenhum',
@@ -543,6 +576,105 @@ Confira os detalhes no app.`;
     );
   };
 
+  // Lê o calendário do TRT e monta a prévia (só datas de hoje em diante)
+  const handleImportarTRT = async () => {
+    setImportando(true);
+    try {
+      const [ano, m] = mes.split('-').map(Number);
+      const inicio = getLocalDateStr(new Date(ano, m - 1, 1));
+      const fim = getLocalDateStr(new Date(ano, m, 0));
+      const sessoes = (await buscarSessoesTRT(inicio, fim)).filter(s => s.data >= hoje);
+
+      const itens: ItemImportacao[] = sessoes.map(s => {
+        const prevista = previstaPorSessao[`${s.data}|${s.tipo_sessao}`];
+        const situacao = temEscalaNaSessao(s.data, s.tipo_sessao) ? 'escalada'
+          : !prevista ? 'nova'
+          : prevista.hora_inicio !== s.hora_inicio || prevista.descricao !== s.descricao ? 'atualizada'
+          : 'igual';
+        return { ...s, situacao };
+      });
+      // Previstas futuras que saíram do calendário do TRT (sessão cancelada/remarcada)
+      const chaves = new Set(sessoes.map(s => `${s.data}|${s.tipo_sessao}`));
+      const remover = previstas.filter(p => p.data >= hoje && !chaves.has(`${p.data}|${p.tipo_sessao}`));
+
+      if (itens.length === 0 && remover.length === 0) {
+        toast(`Nenhuma sessão presencial a partir de hoje em ${nomeMesTitulo} no calendário do TRT.`, { icon: 'ℹ️' });
+        return;
+      }
+      setImportacao({ itens, remover });
+    } catch (err: any) {
+      toast.error(err.message);
+    } finally {
+      setImportando(false);
+    }
+  };
+
+  const confirmarImportacao = async () => {
+    if (!importacao) return;
+    setProcessando(true);
+    try {
+      const gravar = importacao.itens.filter(i => i.situacao !== 'igual');
+      if (gravar.length > 0) {
+        const { error } = await supabase.from('sessoes_previstas').upsert(
+          gravar.map(({ data, tipo_sessao, hora_inicio, descricao }) => ({ data, tipo_sessao, hora_inicio, descricao })),
+          { onConflict: 'data,tipo_sessao' }
+        );
+        if (error) throw error;
+      }
+      if (importacao.remover.length > 0) {
+        const { error } = await supabase.from('sessoes_previstas').delete().in('id', importacao.remover.map(p => p.id));
+        if (error) throw error;
+      }
+      const novas = importacao.itens.filter(i => i.situacao === 'nova').length;
+      toast.success(`Calendário do TRT importado: ${novas} sessão(ões) nova(s).`);
+      setImportacao(null);
+      await carregarMes();
+    } catch (err: any) {
+      console.error('Erro ao importar sessões do TRT:', err);
+      toast.error('Não foi possível importar: ' + err.message);
+    } finally {
+      setProcessando(false);
+    }
+  };
+
+  const descartarPrevista = async (p: Prevista) => {
+    setPrevistas(prev => prev.filter(x => x.id !== p.id));
+    const { error } = await supabase.from('sessoes_previstas').delete().eq('id', p.id);
+    if (error) {
+      setPrevistas(prev => [...prev, p]);
+      toast.error('Não foi possível descartar: ' + error.message);
+    }
+  };
+
+  // Sessão do TRT ainda sem técnico: clique (com técnico escolhido) preenche
+  const renderPrevista = (p: Prevista) => (
+    <span
+      key={p.id}
+      onClick={ev => {
+        ev.stopPropagation();
+        setSessao(p.tipo_sessao);
+        if (membroId) handleClickDia(p.data, p.tipo_sessao);
+        else toast('Escolha o técnico acima e clique na sessão para escalá-lo.', { icon: '👆' });
+      }}
+      title={`${p.tipo_sessao} às ${p.hora_inicio} · a preencher${p.descricao ? `\nTRT: ${p.descricao}` : ''}`}
+      className="group/prev block rounded-md px-1 sm:px-1.5 py-0.5 sm:py-1 border border-dashed border-gray-400 dark:border-gray-500 bg-white/70 dark:bg-gray-800/70 text-gray-600 dark:text-gray-300 leading-tight cursor-pointer hover:border-blue-500 hover:text-blue-700 dark:hover:text-blue-300"
+    >
+      <span className="flex items-center gap-1 text-[9px] sm:text-[10px] font-medium">
+        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${(CORES_SESSAO[p.tipo_sessao] || COR_PADRAO).dot}`} />
+        <span className="truncate"><span className="sm:hidden">{SIGLA_SESSAO[p.tipo_sessao] || p.tipo_sessao}</span><span className="hidden sm:inline">{p.tipo_sessao}</span></span>
+        <span className="hidden md:inline ml-auto shrink-0">{p.hora_inicio}</span>
+        <button
+          onClick={ev => { ev.stopPropagation(); descartarPrevista(p); }}
+          title="Descartar esta sessão prevista"
+          className="hidden sm:group-hover/prev:inline-flex shrink-0 text-gray-400 hover:text-red-600"
+        >
+          <X className="w-3 h-3" />
+        </button>
+      </span>
+      <span className="block truncate text-[10px] sm:text-[11px] font-bold italic">a preencher</span>
+    </span>
+  );
+
   const renderCalendario = () => {
     const [ano, m] = mes.split('-').map(Number);
     const primeiroDiaSemana = new Date(ano, m - 1, 1).getDay();
@@ -572,6 +704,8 @@ Confira os detalhes no app.`;
             const doSelecionado = !!slot && slot.membro_original_id === membroId;
             const motivoAusencia = membroId ? ausencias[membroId]?.[data] : undefined;
             const outrasSessoes = (porDia[data] || []).filter(e => e.tipo_sessao !== sessao);
+            const prevista = !passado && !slot ? previstaPorSessao[`${data}|${sessao}`] : undefined;
+            const previstasDoDia = passado ? [] : previstas.filter(p => p.data === data && !temEscalaNaSessao(data, p.tipo_sessao));
             const tecnicoEmOutraSessao = membroId ? outrasSessoes.find(e => e.membro_original_id === membroId) : undefined;
             const bloqueado = passado || slot?.publicada || (!!motivoAusencia && !doSelecionado);
 
@@ -632,6 +766,9 @@ Confira os detalhes no app.`;
                         (CORES_SESSAO[e.tipo_sessao] || COR_PADRAO).chip,
                         !!membroId && e.membro_original_id !== membroId
                       ))}
+                    {previstasDoDia
+                      .sort((a, b) => ordemSessao(a.tipo_sessao) - ordemSessao(b.tipo_sessao))
+                      .map(renderPrevista)}
                     {motivoAusencia && !passado && (
                       <span className="text-[10px] font-semibold text-amber-700 dark:text-amber-400">{primeiroNome(nomeMembro(membroId))} ausente</span>
                     )}
@@ -641,6 +778,11 @@ Confira os detalhes no app.`;
                   </>
                 ) : slot ? (
                   renderMarcacao(slot, doSelecionado ? cor.chip : 'bg-gray-100 text-gray-700 border-gray-300 dark:bg-gray-700 dark:text-gray-200 dark:border-gray-500', false)
+                ) : prevista && !temEscalaNaSessao(data, sessao) ? (
+                  <>
+                    {renderPrevista(prevista)}
+                    {motivoAusencia && <span className="text-[10px] font-semibold text-amber-700 dark:text-amber-400">Ausente</span>}
+                  </>
                 ) : motivoAusencia && !passado ? (
                   <span className="text-[10px] font-semibold text-amber-700 dark:text-amber-400">Ausente</span>
                 ) : !passado && membroId ? (
@@ -811,6 +953,16 @@ Confira os detalhes no app.`;
                 </select>
               </div>
             )}
+
+            <button
+              onClick={handleImportarTRT}
+              disabled={importando || processando}
+              title="Traz as sessões presenciais do mês do calendário de sessões do TRT20 como 'a preencher'"
+              className="sm:ml-auto flex items-center gap-1.5 px-3 py-2 text-sm font-semibold text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 hover:bg-blue-100 dark:hover:bg-blue-900/40 rounded-xl transition-colors disabled:opacity-50"
+            >
+              {importando ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+              Importar sessões do TRT
+            </button>
           </div>
 
           <div>
@@ -849,6 +1001,9 @@ Confira os detalhes no app.`;
           <span className="flex items-center gap-1.5"><span className="w-4 h-3 rounded border border-dashed border-gray-500" /> rascunho</span>
           <span className="flex items-center gap-1.5"><Lock className="w-3 h-3" /> publicada (arraste para mover; o técnico é avisado)</span>
           <span className="flex items-center gap-1.5"><span className="w-4 h-3 rounded bg-[repeating-linear-gradient(135deg,transparent_0_3px,rgba(245,158,11,0.5)_3px_6px)]" /> ausência do técnico</span>
+          {previstas.length > 0 && (
+            <span className="flex items-center gap-1.5"><span className="w-4 h-3 rounded border border-dashed border-gray-400 bg-white dark:bg-gray-800" /> <em>a preencher</em> (sessão do TRT sem técnico)</span>
+          )}
           {visao === 'sessao' ? (
             <span className="flex items-center gap-1.5">
               {SESSOES_DISPONIVEIS.map(s => <span key={s} className={`w-1.5 h-1.5 rounded-full ${(CORES_SESSAO[s] || COR_PADRAO).dot}`} />)}
@@ -897,6 +1052,9 @@ Confira os detalhes no app.`;
           <p className="text-sm text-gray-600 dark:text-gray-300">
             <strong>{rascunhos.length}</strong> {rascunhos.length === 1 ? 'dia em rascunho' : 'dias em rascunho'} em {nomeMesTitulo}
             <span className="hidden sm:inline text-gray-400"> · invisíveis para os técnicos até publicar</span>
+            {aPreencher.length > 0 && (
+              <span className="text-amber-700 dark:text-amber-400"> · <strong>{aPreencher.length}</strong> {aPreencher.length === 1 ? 'sessão do TRT a preencher' : 'sessões do TRT a preencher'}</span>
+            )}
           </p>
           <div className="flex gap-2 ml-auto">
             {rascunhos.length > 0 && (
@@ -917,6 +1075,62 @@ Confira os detalhes no app.`;
           </div>
         </div>
       </div>
+
+      {importacao && (
+        <div className="fixed inset-0 bg-black/40 z-[70] flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-xl w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden">
+            <div className="p-5 border-b border-gray-100 dark:border-gray-700 flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-lg font-bold text-gray-800 dark:text-gray-100">Sessões do TRT · {nomeMesTitulo}</h3>
+                <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
+                  Sessões presenciais do calendário do tribunal, de hoje em diante. Elas entram como <em>a preencher</em>; depois é só escolher o técnico.
+                </p>
+              </div>
+              <button onClick={() => setImportacao(null)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 p-1 rounded-lg">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-5 overflow-y-auto flex-1 min-h-0 space-y-1.5">
+              {importacao.itens.map(i => (
+                <div key={`${i.data}|${i.tipo_sessao}`} className="flex items-center gap-3 text-sm">
+                  <span className={`w-2 h-2 rounded-full shrink-0 ${(CORES_SESSAO[i.tipo_sessao] || COR_PADRAO).dot}`} />
+                  <span className="w-28 shrink-0 font-medium text-gray-800 dark:text-gray-100">{formatDiaCurto(i.data)}</span>
+                  <span className="w-20 shrink-0 text-gray-700 dark:text-gray-200">{i.tipo_sessao}</span>
+                  <span className="w-12 shrink-0 text-gray-500 dark:text-gray-400">{i.hora_inicio}</span>
+                  <span className={`ml-auto text-xs font-semibold shrink-0 ${
+                    i.situacao === 'nova' ? 'text-green-700 dark:text-green-400'
+                    : i.situacao === 'atualizada' ? 'text-blue-700 dark:text-blue-400'
+                    : 'text-gray-400'
+                  }`}>
+                    {{ nova: 'nova', atualizada: 'horário atualizado', igual: 'já importada', escalada: 'já escalada' }[i.situacao]}
+                  </span>
+                </div>
+              ))}
+              {importacao.remover.length > 0 && (
+                <div className="mt-4 p-3 rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-900/50 text-sm text-amber-800 dark:text-amber-300">
+                  <strong>Não estão mais no calendário do TRT</strong> e serão retiradas das sessões a preencher:
+                  <ul className="mt-1 list-disc pl-5">
+                    {importacao.remover.map(p => <li key={p.id}>{formatDiaCurto(p.data)} · {p.tipo_sessao} · {p.hora_inicio}</li>)}
+                  </ul>
+                  <span className="text-xs">Escalas já marcadas nesses dias não são alteradas.</span>
+                </div>
+              )}
+            </div>
+            <div className="p-4 border-t border-gray-100 dark:border-gray-700 flex justify-end gap-2">
+              <button onClick={() => setImportacao(null)} className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-600 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700">
+                Cancelar
+              </button>
+              <button
+                onClick={confirmarImportacao}
+                disabled={processando}
+                className="px-4 py-2 text-sm font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-xl flex items-center gap-1.5 shadow-sm disabled:opacity-50"
+              >
+                {processando ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />} Importar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {confirmPublicar && (
         <div className="fixed inset-0 bg-black/40 z-[70] flex items-center justify-center p-4 backdrop-blur-sm">

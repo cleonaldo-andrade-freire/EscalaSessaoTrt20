@@ -103,6 +103,19 @@ CREATE TABLE IF NOT EXISTS public.sessao_mensagens (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- 1.7 sessoes_previstas — sessões presenciais importadas do calendário do
+-- TRT20 ("a preencher" no Montar Mês até o admin escolher o técnico)
+CREATE TABLE IF NOT EXISTS public.sessoes_previstas (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    data DATE NOT NULL,
+    tipo_sessao VARCHAR(50) NOT NULL
+        CHECK (tipo_sessao IN ('1ª Turma', '2ª Turma', 'Pleno')),
+    hora_inicio TIME NOT NULL,
+    descricao VARCHAR(300),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT sessoes_previstas_unica UNIQUE (data, tipo_sessao)
+);
+
 
 -- -----------------------------------------------------------------------------
 -- 2. FUNÇÕES AUXILIARES
@@ -295,7 +308,7 @@ CREATE TRIGGER trg_proteger_escala
 GRANT USAGE ON SCHEMA public TO authenticated, service_role;
 GRANT SELECT, INSERT, UPDATE, DELETE ON
   public.membros, public.escalas, public.ausencias_programadas,
-  public.avisos, public.membro_fcm_tokens, public.sessao_mensagens
+  public.avisos, public.membro_fcm_tokens, public.sessao_mensagens, public.sessoes_previstas
 TO authenticated, service_role;
 
 REVOKE EXECUTE ON FUNCTION public.registrar_checkin(UUID, TIMESTAMPTZ) FROM PUBLIC, anon;
@@ -315,6 +328,7 @@ ALTER TABLE public.ausencias_programadas ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.avisos ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.membro_fcm_tokens ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.sessao_mensagens ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.sessoes_previstas ENABLE ROW LEVEL SECURITY;
 
 -- membros: todos os autenticados leem; só admin escreve.
 -- (Cadastro e edição do próprio perfil passam pelas Edge Functions com service_role.)
@@ -387,6 +401,11 @@ DROP POLICY IF EXISTS sessao_mensagens_select ON public.sessao_mensagens;
 DROP POLICY IF EXISTS sessao_mensagens_admin ON public.sessao_mensagens;
 CREATE POLICY sessao_mensagens_select ON public.sessao_mensagens FOR SELECT TO authenticated USING (TRUE);
 CREATE POLICY sessao_mensagens_admin ON public.sessao_mensagens FOR ALL TO authenticated
+  USING (public.is_admin()) WITH CHECK (public.is_admin());
+
+-- sessoes_previstas: só o admin (monta a escala)
+DROP POLICY IF EXISTS sessoes_previstas_admin ON public.sessoes_previstas;
+CREATE POLICY sessoes_previstas_admin ON public.sessoes_previstas FOR ALL TO authenticated
   USING (public.is_admin()) WITH CHECK (public.is_admin());
 
 
