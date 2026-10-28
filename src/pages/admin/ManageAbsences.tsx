@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import AdminLayout from '../../layouts/AdminLayout';
-import { getAusencias, getMembros } from '../../services/ausenciasService';
-import { AusenciaProgramada, Membro } from '../../types';
+import { getAusencias, getMembros, agruparPeriodos, PeriodoAusencia } from '../../services/ausenciasService';
+import { Membro } from '../../types';
 import { CalendarOff, Search, Loader2, Calendar } from 'lucide-react';
 
-interface AusenciaComMembro extends AusenciaProgramada {
+interface AusenciaComMembro extends PeriodoAusencia {
   membroNome: string;
   membroFoto: string;
 }
@@ -28,17 +28,15 @@ const ManageAbsences = () => {
 
       const membrosMap = new Map(membros.map((m: Membro) => [m.id, m]));
 
-      const ausenciasEnriquecidas: AusenciaComMembro[] = todasAusencias.map(a => {
-        const membro = membrosMap.get(a.membroId);
+      // Um registro por período (já ordenados do mais recente para o mais antigo)
+      const ausenciasEnriquecidas: AusenciaComMembro[] = agruparPeriodos(todasAusencias).map(p => {
+        const membro = membrosMap.get(p.membroId);
         return {
-          ...a,
+          ...p,
           membroNome: membro?.nome || 'Membro Desconhecido',
           membroFoto: membro?.fotoUrl || ''
         };
       });
-
-      // Sort by date (descending)
-      ausenciasEnriquecidas.sort((a, b) => b.dataEspecifica.localeCompare(a.dataEspecifica));
 
       setAusencias(ausenciasEnriquecidas);
     } catch (error) {
@@ -53,10 +51,14 @@ const ManageAbsences = () => {
     return `${day}/${month}/${year}`;
   };
 
-  const filteredAusencias = ausencias.filter(a => 
+  const formatPeriodo = (a: AusenciaComMembro) =>
+    a.inicio === a.fim ? formatDate(a.inicio) : `${formatDate(a.inicio)} a ${formatDate(a.fim)}`;
+
+  const filteredAusencias = ausencias.filter(a =>
     a.membroNome.toLowerCase().includes(searchTerm.toLowerCase()) ||
     a.motivo.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    formatDate(a.dataEspecifica).includes(searchTerm)
+    formatPeriodo(a).includes(searchTerm) ||
+    a.dias.some(d => formatDate(d.dataEspecifica).includes(searchTerm))
   );
 
   return (
@@ -115,14 +117,14 @@ const ManageAbsences = () => {
               <thead>
                 <tr className="bg-gray-50 dark:bg-gray-700/50 border-b border-gray-200 dark:border-gray-700">
                   <th className="p-4 pl-6 text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Membro</th>
-                  <th className="p-4 text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Data</th>
+                  <th className="p-4 text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Data / Período</th>
                   <th className="p-4 text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Motivo</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
                 {filteredAusencias.map((ausencia) => {
                   return (
-                    <tr key={ausencia.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/50 dark:bg-gray-700/50 dark:hover:bg-gray-700/50 transition-colors group">
+                    <tr key={ausencia.chave}className="hover:bg-gray-50 dark:hover:bg-gray-700/50 dark:bg-gray-700/50 dark:hover:bg-gray-700/50 transition-colors group">
                       <td className="p-4 pl-6">
                         <div className="flex items-center gap-3">
                           <div className="w-10 h-10 rounded-full bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 flex items-center justify-center font-bold overflow-hidden border border-blue-200 dark:border-blue-800">
@@ -140,8 +142,11 @@ const ManageAbsences = () => {
                       <td className="p-4">
                         <div className="flex items-center gap-2 text-sm font-semibold text-gray-700 dark:text-gray-200 dark:text-gray-300">
                           <Calendar className="w-4 h-4 text-gray-400" />
-                          {formatDate(ausencia.dataEspecifica)}
+                          {formatPeriodo(ausencia)}
                         </div>
+                        {ausencia.dias.length > 1 && (
+                          <div className="text-xs text-gray-400 mt-0.5 ml-6">{ausencia.dias.length} dias</div>
+                        )}
                       </td>
                       <td className="p-4">
                         <p className="text-sm text-gray-600 dark:text-gray-300 dark:text-gray-400 max-w-xs truncate" title={ausencia.motivo}>

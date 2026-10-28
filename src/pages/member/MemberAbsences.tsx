@@ -2,26 +2,31 @@ import toast from 'react-hot-toast';
 import React, { useState, useEffect } from 'react';
 import MemberLayout from '../../layouts/MemberLayout';
 import { supabase } from '../../services/supabaseClient';
-import { getAusencias, saveAusencia, deleteAusencia } from '../../services/ausenciasService';
-import { AusenciaProgramada } from '../../types';
+import { getAusencias, saveAusenciaPeriodo, deleteAusencias, agruparPeriodos, PeriodoAusencia as Periodo } from '../../services/ausenciasService';
 import { CalendarOff, Plus, Trash2, Loader2, AlertCircle, X } from 'lucide-react';
 import CustomDatePicker from '../../components/CustomDatePicker';
+import { getLocalDateStr } from '../../utils/date';
+
+const MAX_DIAS_PERIODO = 90;
 
 const MemberAbsences = () => {
-  const [ausencias, setAusencias] = useState<AusenciaProgramada[]>([]);
+  const [periodos, setPeriodos] = useState<Periodo[]>([]);
   const [loading, setLoading] = useState(true);
   const [userId, setUserId] = useState<string | null>(null);
-  
+
   // Form states
   const [isFormOpen, setIsFormOpen] = useState(false);
-  const [dataEspecifica, setDataEspecifica] = useState('');
+  const [dataInicio, setDataInicio] = useState('');
+  const [dataFim, setDataFim] = useState('');
   const [motivo, setMotivo] = useState('');
   const [saving, setSaving] = useState(false);
 
   // Modal states
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
-  const [absenceToDelete, setAbsenceToDelete] = useState<string | null>(null);
+  const [absenceToDelete, setAbsenceToDelete] = useState<Periodo | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+
+  const hoje = getLocalDateStr();
 
   useEffect(() => {
     loadData();
@@ -36,12 +41,7 @@ const MemberAbsences = () => {
       setUserId(user.id);
 
       const todasAusencias = await getAusencias();
-      const minhasAusencias = todasAusencias.filter(a => a.membroId === user.id);
-      
-      // Sort by date (descending)
-      minhasAusencias.sort((a, b) => b.dataEspecifica.localeCompare(a.dataEspecifica));
-      
-      setAusencias(minhasAusencias);
+      setPeriodos(agruparPeriodos(todasAusencias.filter(a => a.membroId === user.id)));
     } catch (error) {
       console.error('Erro ao carregar ausências:', error);
     } finally {
@@ -51,21 +51,31 @@ const MemberAbsences = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!userId || !dataEspecifica || !motivo.trim()) return;
+    if (!userId || !motivo.trim()) return;
+    if (!dataInicio || !dataFim) {
+      toast.error('Informe a data de início e a data final.');
+      return;
+    }
+    if (dataFim < dataInicio) {
+      toast.error('A data final não pode ser anterior à data de início.');
+      return;
+    }
+    const totalDias = Math.round((new Date(dataFim + 'T12:00:00').getTime() - new Date(dataInicio + 'T12:00:00').getTime()) / 86400000) + 1;
+    if (totalDias > MAX_DIAS_PERIODO) {
+      toast.error(`O período pode ter no máximo ${MAX_DIAS_PERIODO} dias.`);
+      return;
+    }
 
     try {
       setSaving(true);
-      const novaAusencia: AusenciaProgramada = {
-        id: '', // Supabase will handle or lib will generate UUID
-        membroId: userId,
-        dataEspecifica,
-        motivo
-      };
+      const gravados = await saveAusenciaPeriodo(userId, dataInicio, dataFim, motivo.trim());
+      if (gravados === 0) toast('Todos os dias do período já estavam registrados.', { icon: 'ℹ️' });
+      else if (gravados < totalDias) toast.success(`Ausência registrada (${gravados} de ${totalDias} dias; os demais já existiam).`);
+      else toast.success('Ausência registrada.');
 
-      await saveAusencia(novaAusencia);
-      
       // Reset form and reload
-      setDataEspecifica('');
+      setDataInicio('');
+      setDataFim('');
       setMotivo('');
       setIsFormOpen(false);
       await loadData();
@@ -77,17 +87,18 @@ const MemberAbsences = () => {
     }
   };
 
-  const confirmDelete = (id: string) => {
-    setAbsenceToDelete(id);
+  const confirmDelete = (periodo: Periodo) => {
+    setAbsenceToDelete(periodo);
     setIsDeleteModalOpen(true);
   };
 
   const executeDelete = async () => {
     if (!absenceToDelete) return;
-    
+
     try {
       setIsDeleting(true);
-      await deleteAusencia(absenceToDelete);
+      // Dias já passados ficam registrados; cancela de hoje em diante
+      await deleteAusencias(absenceToDelete.dias.filter(d => d.dataEspecifica >= hoje).map(d => d.id));
       await loadData();
     } catch (error) {
       console.error('Erro ao excluir ausência:', error);
@@ -104,10 +115,7 @@ const MemberAbsences = () => {
     return `${day}/${month}/${year}`;
   };
 
-  const isPast = (dateString: string) => {
-    const today = new Date().toISOString().split('T')[0];
-    return dateString < today;
-  };
+  const isPast = (dateString: string) => dateString < hoje;
 
   return (
     <MemberLayout activeTab="ausencias">
@@ -117,7 +125,7 @@ const MemberAbsences = () => {
           Ausências
         </h1>
         <p className="text-blue-100 text-sm">
-          Informe dias em que não poderá participar das escalas
+          Informe dias ou períodos em que não poderá participar das escalas
         </p>
       </div>
 
@@ -136,15 +144,32 @@ const MemberAbsences = () => {
           <form onSubmit={handleSubmit} className="bg-white dark:bg-gray-800 p-5 rounded-2xl shadow-lg border border-gray-100 dark:border-gray-700 mb-6">
             <h2 className="text-lg font-bold text-gray-800 dark:text-gray-100 mb-4">Nova Ausência</h2>
             
-            <div className="mb-4">
-              <label className="block text-sm font-semibold text-gray-700 dark:text-gray-200 mb-1">Data</label>
-              <CustomDatePicker 
-                selected={dataEspecifica ? new Date(dataEspecifica + 'T12:00:00') : null}
-                onChange={(d: Date | null) => setDataEspecifica(d ? d.toISOString().split('T')[0] : '')}
-                minDate={new Date()}
-                placeholderText="DD/MM/AAAA"
-                className="w-full"
-              />
+            <div className="grid grid-cols-2 gap-3 mb-4">
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 dark:text-gray-200 mb-1">Data início</label>
+                <CustomDatePicker
+                  selected={dataInicio ? new Date(dataInicio + 'T12:00:00') : null}
+                  onChange={(d: Date | null) => {
+                    const novo = d ? getLocalDateStr(d) : '';
+                    setDataInicio(novo);
+                    // Um dia só por padrão; ajusta o fim se ficar antes do início
+                    if (novo && (!dataFim || dataFim < novo)) setDataFim(novo);
+                  }}
+                  minDate={new Date()}
+                  placeholderText="DD/MM/AAAA"
+                  className="w-full"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 dark:text-gray-200 mb-1">Data final</label>
+                <CustomDatePicker
+                  selected={dataFim ? new Date(dataFim + 'T12:00:00') : null}
+                  onChange={(d: Date | null) => setDataFim(d ? getLocalDateStr(d) : '')}
+                  minDate={dataInicio ? new Date(dataInicio + 'T12:00:00') : new Date()}
+                  placeholderText="DD/MM/AAAA"
+                  className="w-full"
+                />
+              </div>
             </div>
             
             <div className="mb-5">
@@ -181,7 +206,7 @@ const MemberAbsences = () => {
           <div className="flex justify-center items-center py-12">
             <Loader2 className="w-8 h-8 animate-spin text-blue-500" />
           </div>
-        ) : ausencias.length === 0 ? (
+        ) : periodos.length === 0 ? (
           <div className="bg-white dark:bg-gray-800 rounded-2xl p-8 text-center shadow-sm border border-gray-100 dark:border-gray-700 flex flex-col items-center justify-center">
             <div className="w-16 h-16 bg-blue-50 rounded-full flex items-center justify-center mb-4">
               <CalendarOff className="w-8 h-8 text-blue-300" />
@@ -194,11 +219,12 @@ const MemberAbsences = () => {
         ) : (
           <div className="space-y-4">
             <h3 className="font-bold text-gray-800 dark:text-gray-100 px-1">Suas Ausências Programadas</h3>
-            {ausencias.map(ausencia => {
-              const past = isPast(ausencia.dataEspecifica);
+            {periodos.map(periodo => {
+              const past = isPast(periodo.fim);
+              const umDia = periodo.inicio === periodo.fim;
               return (
-                <div 
-                  key={ausencia.id} 
+                <div
+                  key={periodo.chave}
                   className={`bg-white dark:bg-gray-800 p-5 rounded-2xl shadow-sm border ${past ? 'border-gray-100 dark:border-gray-700 opacity-60' : 'border-blue-100'} flex flex-col gap-3 relative overflow-hidden`}
                 >
                   {past && (
@@ -210,13 +236,17 @@ const MemberAbsences = () => {
                   
                   <div className="flex justify-between items-start">
                     <div>
-                      <div className="text-sm text-gray-500 dark:text-gray-400 font-medium">Data</div>
-                      <div className="text-lg font-black text-gray-800 dark:text-gray-100">{formatDate(ausencia.dataEspecifica)}</div>
+                      <div className="text-sm text-gray-500 dark:text-gray-400 font-medium">
+                        {umDia ? 'Data' : `Período · ${periodo.dias.length} dias`}
+                      </div>
+                      <div className="text-lg font-black text-gray-800 dark:text-gray-100">
+                        {umDia ? formatDate(periodo.inicio) : `${formatDate(periodo.inicio)} a ${formatDate(periodo.fim)}`}
+                      </div>
                     </div>
-                    
+
                     {!past && (
                       <button
-                        onClick={() => confirmDelete(ausencia.id)}
+                        onClick={() => confirmDelete(periodo)}
                         className="w-8 h-8 bg-red-50 text-red-500 rounded-full flex items-center justify-center hover:bg-red-100 hover:text-red-600 transition-colors"
                         title="Cancelar Ausência"
                       >
@@ -227,7 +257,7 @@ const MemberAbsences = () => {
                   
                   <div className="bg-gray-50 dark:bg-gray-700/50 p-3 rounded-xl border border-gray-100 dark:border-gray-700 mt-1">
                     <div className="text-xs text-gray-500 dark:text-gray-400 font-semibold mb-1 uppercase tracking-wide">Motivo</div>
-                    <p className="text-sm text-gray-700 dark:text-gray-200">{ausencia.motivo}</p>
+                    <p className="text-sm text-gray-700 dark:text-gray-200">{periodo.motivo}</p>
                   </div>
                   
                   {past && (
@@ -265,7 +295,11 @@ const MemberAbsences = () => {
                 <div className="mt-0.5 mr-3 text-red-500">
                   <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
                 </div>
-                Ao cancelar esta ausência, você voltará a ficar disponível para ser escalado nesta data.
+                {absenceToDelete.inicio < hoje
+                  ? 'Os dias que já passaram continuam registrados; você voltará a ficar disponível de hoje até o fim do período.'
+                  : absenceToDelete.inicio === absenceToDelete.fim
+                    ? 'Ao cancelar esta ausência, você voltará a ficar disponível para ser escalado nesta data.'
+                    : 'Ao cancelar esta ausência, você voltará a ficar disponível para ser escalado em todo o período.'}
               </div>
             </div>
 
