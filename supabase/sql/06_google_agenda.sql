@@ -6,7 +6,7 @@
 -- a Edge Function `sync-google-calendar`, que atualiza um evento por sessão.
 -- Rascunhos, check-in/check-out e lembretes não disparam nada.
 -- Ausências programadas também viram eventos (dia inteiro, um por período,
--- sem o motivo): cadastrar, encurtar ou cancelar atualiza a agenda.
+-- com o motivo no título): cadastrar, alterar ou cancelar atualiza a agenda.
 --
 -- A conexão (chave da Service Account + ID da agenda) é feita pelo admin no
 -- app, em "Google Agenda", e fica gravada em google_agenda_config. Com a
@@ -130,10 +130,10 @@ BEGIN
   ELSIF TG_OP = 'DELETE' THEN
     SELECT jsonb_agg(o.id) INTO v_ids FROM antigas o;
   ELSE
-    -- O motivo não vai para a agenda: só período e técnico importam
+    -- Técnico, período e motivo (título do evento)
     SELECT jsonb_agg(n.id) INTO v_ids
       FROM antigas o JOIN novas n ON n.id = o.id
-     WHERE (o.membro_id, o.data_inicio, o.data_fim) IS DISTINCT FROM (n.membro_id, n.data_inicio, n.data_fim);
+     WHERE (o.membro_id, o.data_inicio, o.data_fim, o.motivo) IS DISTINCT FROM (n.membro_id, n.data_inicio, n.data_fim, n.motivo);
   END IF;
 
   IF v_ids IS NOT NULL THEN

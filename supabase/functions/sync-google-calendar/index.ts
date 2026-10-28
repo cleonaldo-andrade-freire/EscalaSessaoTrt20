@@ -11,7 +11,7 @@ import { getGoogleAccessToken } from '../_shared/google.ts';
 // Chamadas aceitas:
 //   - Trigger do banco (header x-cron-secret), ver supabase/sql/06_google_agenda.sql:
 //       { sessoes: [{ data: 'YYYY-MM-DD', tipo_sessao: '1ª Turma' }, ...] }
-//       { ausencias: ['<id>', ...] }   (ausências programadas: um evento de dia inteiro por período)
+//       { ausencias: ['<id>', ...] }   (ausências programadas: um evento de dia inteiro por período, título = motivo)
 //   - Admin (JWT), campo `acao`:
 //       status | salvar { calendar_id, service_account?, ativo } | testar
 //       | sincronizar { inicio, fim } | desconectar
@@ -137,15 +137,15 @@ async function sincronizar(db: SupabaseClient, config: Config, sessoes: Sessao[]
   return resultados;
 }
 
-// Ausências programadas: um evento de dia inteiro por período, sem o motivo
-// (a agenda é compartilhada). Id que não existe mais no banco = apaga o evento.
+// Ausências programadas: um evento de dia inteiro por período, com o motivo
+// no título. Id que não existe mais no banco = apaga o evento.
 async function sincronizarAusencias(db: SupabaseClient, config: Config, ids: string[]) {
   const unicos = [...new Set(ids)];
   if (unicos.length === 0) return [];
 
   const { data: ausencias, error } = await db
     .from('ausencias_programadas')
-    .select('id, data_inicio, data_fim, membro:membro_id ( nome )')
+    .select('id, data_inicio, data_fim, motivo, membro:membro_id ( nome )')
     .in('id', unicos);
   if (error) throw error;
   const porId = new Map((ausencias ?? []).map((a: any) => [a.id, a]));
@@ -168,7 +168,7 @@ async function sincronizarAusencias(db: SupabaseClient, config: Config, ids: str
 
       const evento = {
         id: eventId,
-        summary: `Ausência – ${a.membro?.nome ?? 'Técnico'}`,
+        summary: `${a.motivo?.trim() || 'Ausência'} – ${a.membro?.nome ?? 'Técnico'}`,
         start: { date: a.data_inicio },
         end: { date: diaSeguinte(a.data_fim) },
         transparency: 'transparent', // não bloqueia horário de ninguém
