@@ -864,9 +864,21 @@ Confira os detalhes no app.`;
               Escolha a sessão e o técnico e clique nos dias para marcar; clique de novo para desmarcar. Arraste uma marcação para mudar de dia ou trocar com outro técnico. Tudo fica em rascunho até você publicar.
             </p>
           </div>
-          <button onClick={onClose} className="shrink-0 text-gray-500 hover:text-gray-700 dark:text-gray-300 dark:hover:text-gray-100 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 p-2 rounded-full transition-colors" title="Fechar">
+          <div className="shrink-0 flex items-center gap-2">
+            <button
+              onClick={handleImportarTRT}
+              disabled={importando || processando}
+              title={`Traz as sessões presenciais de ${nomeMesTitulo} do calendário do TRT20 como "a preencher"`}
+              className="flex items-center gap-1.5 px-3 py-2 text-sm font-semibold text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 bg-white dark:bg-gray-800 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded-xl shadow-sm transition-colors disabled:opacity-50"
+            >
+              {importando ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+              <span className="hidden sm:inline">Importar sessões do TRT</span>
+              <span className="sm:hidden">TRT</span>
+            </button>
+            <button onClick={onClose} className="shrink-0 text-gray-500 hover:text-gray-700 dark:text-gray-300 dark:hover:text-gray-100 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 p-2 rounded-full transition-colors" title="Fechar">
             <X className="w-5 h-5" />
-          </button>
+            </button>
+          </div>
         </div>
 
         {/* Controles */}
@@ -941,16 +953,6 @@ Confira os detalhes no app.`;
                 </select>
               </div>
             )}
-
-            <button
-              onClick={handleImportarTRT}
-              disabled={importando || processando}
-              title="Traz as sessões presenciais do mês do calendário de sessões do TRT20 como 'a preencher'"
-              className="sm:ml-auto flex items-center gap-1.5 px-3 py-2 text-sm font-semibold text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 hover:bg-blue-100 dark:hover:bg-blue-900/40 rounded-xl transition-colors disabled:opacity-50"
-            >
-              {importando ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-              Importar sessões do TRT
-            </button>
           </div>
 
           <div>
