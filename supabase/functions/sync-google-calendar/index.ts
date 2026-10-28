@@ -14,7 +14,7 @@ import { getGoogleAccessToken } from '../_shared/google.ts';
 //       { ausencias: ['<id>', ...] }   (ausências programadas: um evento de dia inteiro por período, título = motivo)
 //   - Admin (JWT), campo `acao`:
 //       status | salvar { calendar_id, service_account?, ativo } | testar
-//       | sincronizar { inicio, fim } | desconectar
+//       | sincronizar { inicio, fim } | sincronizar_ausencias | desconectar
 //
 // Cada sessão é relida do banco e o evento é criado, atualizado ou removido
 // até ficar igual a ela — sincronizar duas vezes não duplica nada.
@@ -287,6 +287,20 @@ serve(async (req) => {
           ...await sincronizar(db, config, data ?? []),
           ...await sincronizarAusencias(db, config, (ausencias ?? []).map((a: any) => a.id)),
         ];
+        const falhas = resultados.filter(r => r.acao === 'erro');
+        return jsonResponse({
+          success: falhas.length === 0,
+          sincronizadas: resultados.length - falhas.length,
+          falhas: falhas.length,
+          ...(falhas.length ? { erro: falhas[0].erro } : {}),
+        });
+      }
+
+      case 'sincronizar_ausencias': {
+        if (!config) return jsonResponse({ error: 'Conecte o Google Agenda antes de sincronizar.' }, 400);
+        const { data, error } = await db.from('ausencias_programadas').select('id');
+        if (error) throw error;
+        const resultados = await sincronizarAusencias(db, config, (data ?? []).map((a: any) => a.id));
         const falhas = resultados.filter(r => r.acao === 'erro');
         return jsonResponse({
           success: falhas.length === 0,

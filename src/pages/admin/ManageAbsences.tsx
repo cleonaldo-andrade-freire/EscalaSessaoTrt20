@@ -2,7 +2,9 @@ import React, { useState, useEffect } from 'react';
 import AdminLayout from '../../layouts/AdminLayout';
 import { getAusencias, getMembros, diasDoPeriodo } from '../../services/ausenciasService';
 import { AusenciaProgramada, Membro } from '../../types';
-import { CalendarOff, Search, Loader2, Calendar } from 'lucide-react';
+import { CalendarOff, Search, Loader2, Calendar, RefreshCw } from 'lucide-react';
+import toast from 'react-hot-toast';
+import { googleAgenda, GoogleAgendaStatus } from '../../services/googleAgendaService';
 
 interface AusenciaComMembro extends AusenciaProgramada {
   membroNome: string;
@@ -13,10 +15,28 @@ const ManageAbsences = () => {
   const [ausencias, setAusencias] = useState<AusenciaComMembro[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
-  
+  const [agendaConectada, setAgendaConectada] = useState(false);
+  const [sincronizando, setSincronizando] = useState(false);
+
   useEffect(() => {
     loadData();
+    // O botão de sincronizar só aparece com o Google Agenda conectado
+    googleAgenda<GoogleAgendaStatus>('status')
+      .then(s => setAgendaConectada(s.configurado))
+      .catch(() => setAgendaConectada(false));
   }, []);
+
+  const sincronizarAgenda = async () => {
+    setSincronizando(true);
+    try {
+      const r = await googleAgenda<{ sincronizadas: number; falhas: number; erro?: string }>('sincronizar_ausencias');
+      if (r.falhas) toast.error(`${r.sincronizadas} ausência(s) sincronizada(s), ${r.falhas} com erro: ${r.erro}`);
+      else toast.success(r.sincronizadas ? `${r.sincronizadas} ausência(s) sincronizada(s) com o Google Agenda.` : 'Nenhuma ausência cadastrada.');
+    } catch (err: any) {
+      toast.error(err.message);
+    }
+    setSincronizando(false);
+  };
 
   const loadData = async () => {
     try {
@@ -79,6 +99,17 @@ const ManageAbsences = () => {
             Acompanhe os dias em que os membros não estarão disponíveis.
           </p>
         </div>
+        {agendaConectada && (
+          <button
+            onClick={sincronizarAgenda}
+            disabled={sincronizando}
+            title="Envia todas as ausências para o Google Agenda (cria, atualiza ou remove os eventos)"
+            className="flex items-center justify-center px-4 py-2.5 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 font-medium rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700 shadow-sm transition-colors disabled:opacity-50"
+          >
+            <RefreshCw className={`w-5 h-5 mr-2 ${sincronizando ? 'animate-spin' : ''}`} />
+            {sincronizando ? 'Sincronizando...' : 'Sincronizar com Google Agenda'}
+          </button>
+        )}
       </div>
 
       <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
