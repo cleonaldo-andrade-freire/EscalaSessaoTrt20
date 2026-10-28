@@ -167,7 +167,8 @@ const MonthlyScaleBuilder: React.FC<MonthlyScaleBuilderProps> = ({ mesInicial, m
 
     const [escRes, ausRes] = await Promise.all([
       supabase.from('escalas').select(CAMPOS_ESCALA).gte('data', inicio).lte('data', fim),
-      supabase.from('ausencias_programadas').select('membro_id, data_especifica, motivo').gte('data_especifica', inicio).lte('data_especifica', fim),
+      // Períodos que tocam o mês
+      supabase.from('ausencias_programadas').select('membro_id, data_inicio, data_fim, motivo').lte('data_inicio', fim).gte('data_fim', inicio),
     ]);
     if (!isAtual()) return;
 
@@ -176,7 +177,11 @@ const MonthlyScaleBuilder: React.FC<MonthlyScaleBuilderProps> = ({ mesInicial, m
 
     const mapa: Record<string, Record<string, string>> = {};
     ausRes.data?.forEach((a: any) => {
-      (mapa[a.membro_id] ||= {})[a.data_especifica] = a.motivo?.trim() || 'Motivo não informado';
+      const motivo = a.motivo?.trim() || 'Motivo não informado';
+      const ultimo = a.data_fim < fim ? a.data_fim : fim;
+      for (let d = new Date((a.data_inicio > inicio ? a.data_inicio : inicio) + 'T12:00:00'); getLocalDateStr(d) <= ultimo; d.setDate(d.getDate() + 1)) {
+        (mapa[a.membro_id] ||= {})[getLocalDateStr(d)] = motivo;
+      }
     });
     setAusencias(mapa);
     setLoading(false);

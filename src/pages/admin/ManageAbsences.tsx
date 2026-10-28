@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import AdminLayout from '../../layouts/AdminLayout';
-import { getAusencias, getMembros, agruparPeriodos, PeriodoAusencia } from '../../services/ausenciasService';
-import { Membro } from '../../types';
+import { getAusencias, getMembros, diasDoPeriodo } from '../../services/ausenciasService';
+import { AusenciaProgramada, Membro } from '../../types';
 import { CalendarOff, Search, Loader2, Calendar } from 'lucide-react';
 
-interface AusenciaComMembro extends PeriodoAusencia {
+interface AusenciaComMembro extends AusenciaProgramada {
   membroNome: string;
   membroFoto: string;
 }
@@ -28,8 +28,8 @@ const ManageAbsences = () => {
 
       const membrosMap = new Map(membros.map((m: Membro) => [m.id, m]));
 
-      // Um registro por período (já ordenados do mais recente para o mais antigo)
-      const ausenciasEnriquecidas: AusenciaComMembro[] = agruparPeriodos(todasAusencias).map(p => {
+      // Um registro por período, do mais recente para o mais antigo
+      const ausenciasEnriquecidas: AusenciaComMembro[] = todasAusencias.map(p => {
         const membro = membrosMap.get(p.membroId);
         return {
           ...p,
@@ -52,13 +52,17 @@ const ManageAbsences = () => {
   };
 
   const formatPeriodo = (a: AusenciaComMembro) =>
-    a.inicio === a.fim ? formatDate(a.inicio) : `${formatDate(a.inicio)} a ${formatDate(a.fim)}`;
+    a.dataInicio === a.dataFim ? formatDate(a.dataInicio) : `${formatDate(a.dataInicio)} a ${formatDate(a.dataFim)}`;
+
+  // Data completa digitada (DD/MM/AAAA) encontra os períodos que a contêm
+  const dataBuscada = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(searchTerm.trim());
+  const isoBuscada = dataBuscada ? `${dataBuscada[3]}-${dataBuscada[2]}-${dataBuscada[1]}` : null;
 
   const filteredAusencias = ausencias.filter(a =>
     a.membroNome.toLowerCase().includes(searchTerm.toLowerCase()) ||
     a.motivo.toLowerCase().includes(searchTerm.toLowerCase()) ||
     formatPeriodo(a).includes(searchTerm) ||
-    a.dias.some(d => formatDate(d.dataEspecifica).includes(searchTerm))
+    (!!isoBuscada && a.dataInicio <= isoBuscada && isoBuscada <= a.dataFim)
   );
 
   return (
@@ -124,7 +128,7 @@ const ManageAbsences = () => {
               <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
                 {filteredAusencias.map((ausencia) => {
                   return (
-                    <tr key={ausencia.chave}className="hover:bg-gray-50 dark:hover:bg-gray-700/50 dark:bg-gray-700/50 dark:hover:bg-gray-700/50 transition-colors group">
+                    <tr key={ausencia.id}className="hover:bg-gray-50 dark:hover:bg-gray-700/50 dark:bg-gray-700/50 dark:hover:bg-gray-700/50 transition-colors group">
                       <td className="p-4 pl-6">
                         <div className="flex items-center gap-3">
                           <div className="w-10 h-10 rounded-full bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 flex items-center justify-center font-bold overflow-hidden border border-blue-200 dark:border-blue-800">
@@ -144,8 +148,8 @@ const ManageAbsences = () => {
                           <Calendar className="w-4 h-4 text-gray-400" />
                           {formatPeriodo(ausencia)}
                         </div>
-                        {ausencia.dias.length > 1 && (
-                          <div className="text-xs text-gray-400 mt-0.5 ml-6">{ausencia.dias.length} dias</div>
+                        {ausencia.dataFim > ausencia.dataInicio && (
+                          <div className="text-xs text-gray-400 mt-0.5 ml-6">{diasDoPeriodo(ausencia.dataInicio, ausencia.dataFim)} dias</div>
                         )}
                       </td>
                       <td className="p-4">

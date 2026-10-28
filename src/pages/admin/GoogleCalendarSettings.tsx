@@ -67,8 +67,8 @@ const GoogleCalendarSettings = () => {
       inicio: getLocalDateStr(inicio),
       fim: getLocalDateStr(fim),
     });
-    if (r.falhas) toast.error(`${r.sincronizadas} sessão(ões) sincronizada(s), ${r.falhas} com erro: ${r.erro}`);
-    else toast.success(r.sincronizadas ? `${r.sincronizadas} sessão(ões) sincronizada(s).` : 'Nenhuma sessão publicada neste mês.');
+    if (r.falhas) toast.error(`${r.sincronizadas} evento(s) sincronizado(s), ${r.falhas} com erro: ${r.erro}`);
+    else toast.success(r.sincronizadas ? `${r.sincronizadas} evento(s) sincronizado(s).` : 'Nenhuma sessão publicada ou ausência neste mês.');
   });
 
   const handleDesconectar = () => executar('desconectar', async () => {
@@ -191,7 +191,7 @@ const GoogleCalendarSettings = () => {
               <div>
                 <h3 className="text-lg font-bold text-gray-900 dark:text-gray-50">Sincronizar um mês</h3>
                 <p className="text-sm text-gray-500 dark:text-gray-400">
-                  Envia agora todas as sessões publicadas do mês, por exemplo para meses publicados antes da conexão.
+                  Envia agora todas as sessões publicadas e as ausências do mês, por exemplo para meses publicados antes da conexão.
                 </p>
               </div>
               <div className="flex flex-col sm:flex-row gap-3 sm:items-center">

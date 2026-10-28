@@ -61,15 +61,17 @@ CREATE INDEX IF NOT EXISTS idx_escalas_membro_original ON public.escalas(membro_
 CREATE INDEX IF NOT EXISTS idx_escalas_membro_substituto ON public.escalas(membro_substituto_id);
 CREATE INDEX IF NOT EXISTS idx_escalas_status_substituicao ON public.escalas(status_substituicao);
 
--- 1.3 ausencias_programadas
+-- 1.3 ausencias_programadas — um registro por período (inclusive)
 CREATE TABLE IF NOT EXISTS public.ausencias_programadas (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     membro_id UUID NOT NULL REFERENCES public.membros(id) ON DELETE CASCADE,
-    data_especifica DATE NOT NULL,
+    data_inicio DATE NOT NULL,
+    data_fim DATE NOT NULL,
     motivo VARCHAR(500),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT ausencias_periodo_valido CHECK (data_fim >= data_inicio)
 );
-CREATE INDEX IF NOT EXISTS idx_ausencias_lookup ON public.ausencias_programadas(membro_id, data_especifica);
+CREATE INDEX IF NOT EXISTS idx_ausencias_periodo ON public.ausencias_programadas(membro_id, data_inicio, data_fim);
 
 -- 1.4 avisos (um registro por destinatário)
 CREATE TABLE IF NOT EXISTS public.avisos (
@@ -350,9 +352,14 @@ CREATE POLICY escalas_update ON public.escalas FOR UPDATE TO authenticated
 -- cada técnico gerencia as próprias; admin gerencia todas.
 DROP POLICY IF EXISTS ausencias_select ON public.ausencias_programadas;
 DROP POLICY IF EXISTS ausencias_insert ON public.ausencias_programadas;
+DROP POLICY IF EXISTS ausencias_update ON public.ausencias_programadas;
 DROP POLICY IF EXISTS ausencias_delete ON public.ausencias_programadas;
 CREATE POLICY ausencias_select ON public.ausencias_programadas FOR SELECT TO authenticated USING (TRUE);
 CREATE POLICY ausencias_insert ON public.ausencias_programadas FOR INSERT TO authenticated
+  WITH CHECK (auth.uid() = membro_id OR public.is_admin());
+-- Cancelar o restante de um período em andamento encurta o data_fim
+CREATE POLICY ausencias_update ON public.ausencias_programadas FOR UPDATE TO authenticated
+  USING (auth.uid() = membro_id OR public.is_admin())
   WITH CHECK (auth.uid() = membro_id OR public.is_admin());
 CREATE POLICY ausencias_delete ON public.ausencias_programadas FOR DELETE TO authenticated
   USING (auth.uid() = membro_id OR public.is_admin());

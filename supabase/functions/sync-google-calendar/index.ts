@@ -11,6 +11,7 @@ import { getGoogleAccessToken } from '../_shared/google.ts';
 // Chamadas aceitas:
 //   - Trigger do banco (header x-cron-secret), ver supabase/sql/06_google_agenda.sql:
 //       { sessoes: [{ data: 'YYYY-MM-DD', tipo_sessao: '1ª Turma' }, ...] }
+//       { ausencias: ['<id>', ...] }   (ausências programadas: um evento de dia inteiro por período)
 //   - Admin (JWT), campo `acao`:
 //       status | salvar { calendar_id, service_account?, ativo } | testar
 //       | sincronizar { inicio, fim } | desconectar
@@ -29,6 +30,16 @@ interface Config { calendar_id: string; service_account: string; ativo: boolean;
 // Id fixo do evento por sessão (o Google aceita só 0-9 e a-v), dispensando
 // guardar o id no banco.
 const eventId = (s: Sessao) => `trt20${s.data.replace(/-/g, '')}${CODIGO_SESSAO[s.tipo_sessao] ?? 'x'}`;
+
+// Evento da ausência: id do registro sem hífens (hex cabe no alfabeto do Google)
+const eventIdAusencia = (id: string) => `aus${id.replace(/-/g, '')}`;
+
+// Fim exclusivo do evento de dia inteiro (dia seguinte ao último dia)
+const diaSeguinte = (data: string) => {
+  const d = new Date(`${data}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+};
 
 const membroEfetivo = (e: any) =>
   e.status_substituicao === 'Substituição Aceita' && e.membro_substituto_id ? e.membro_substituto_id : e.membro_original_id;
@@ -126,6 +137,56 @@ async function sincronizar(db: SupabaseClient, config: Config, sessoes: Sessao[]
   return resultados;
 }
 
+// Ausências programadas: um evento de dia inteiro por período, sem o motivo
+// (a agenda é compartilhada). Id que não existe mais no banco = apaga o evento.
+async function sincronizarAusencias(db: SupabaseClient, config: Config, ids: string[]) {
+  const unicos = [...new Set(ids)];
+  if (unicos.length === 0) return [];
+
+  const { data: ausencias, error } = await db
+    .from('ausencias_programadas')
+    .select('id, data_inicio, data_fim, membro:membro_id ( nome )')
+    .in('id', unicos);
+  if (error) throw error;
+  const porId = new Map((ausencias ?? []).map((a: any) => [a.id, a]));
+
+  const google = clienteGoogle(await getGoogleAccessToken(config.service_account, SCOPE), config.calendar_id);
+
+  const resultados: any[] = [];
+  for (const id of unicos) {
+    const eventId = eventIdAusencia(id);
+    const a: any = porId.get(id);
+    try {
+      if (!a) {
+        const resp = await google('DELETE', `/${eventId}`);
+        if (!resp.ok && resp.status !== 404 && resp.status !== 410) {
+          throw new Error(`HTTP ${resp.status} ${(await resp.text()).slice(0, 200)}`);
+        }
+        resultados.push({ ausencia: id, acao: 'removido' });
+        continue;
+      }
+
+      const evento = {
+        id: eventId,
+        summary: `Ausência – ${a.membro?.nome ?? 'Técnico'}`,
+        start: { date: a.data_inicio },
+        end: { date: diaSeguinte(a.data_fim) },
+        transparency: 'transparent', // não bloqueia horário de ninguém
+        colorId: '8',                // cinza, para separar das sessões
+        status: 'confirmed',
+      };
+      let resp = await google('PUT', `/${eventId}`, evento);
+      if (resp.status === 404) resp = await google('POST', '', evento);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status} ${(await resp.text()).slice(0, 200)}`);
+      resultados.push({ ausencia: id, acao: 'atualizado' });
+    } catch (err: any) {
+      console.error(`[sync-google-calendar] Falha na ausência ${id}:`, err?.message ?? err);
+      resultados.push({ ausencia: id, acao: 'erro', erro: err?.message ?? String(err) });
+    }
+  }
+  return resultados;
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -144,7 +205,10 @@ serve(async (req) => {
       }
       const config = await lerConfig(db);
       if (!config?.ativo) return jsonResponse({ message: 'Sincronização desativada.' });
-      const resultados = await sincronizar(db, config, Array.isArray(body.sessoes) ? body.sessoes : []);
+      const resultados = [
+        ...await sincronizar(db, config, Array.isArray(body.sessoes) ? body.sessoes : []),
+        ...await sincronizarAusencias(db, config, Array.isArray(body.ausencias) ? body.ausencias : []),
+      ];
       const falhas = resultados.filter(r => r.acao === 'erro').length;
       return jsonResponse({ success: falhas === 0, resultados }, falhas ? 502 : 200);
     }
@@ -212,7 +276,17 @@ serve(async (req) => {
           .gte('data', body.inicio)
           .lte('data', body.fim);
         if (error) throw error;
-        const resultados = await sincronizar(db, config, data ?? []);
+        // Ausências que tocam o período (início antes do fim e fim depois do início)
+        const { data: ausencias, error: ausError } = await db
+          .from('ausencias_programadas')
+          .select('id')
+          .lte('data_inicio', body.fim)
+          .gte('data_fim', body.inicio);
+        if (ausError) throw ausError;
+        const resultados = [
+          ...await sincronizar(db, config, data ?? []),
+          ...await sincronizarAusencias(db, config, (ausencias ?? []).map((a: any) => a.id)),
+        ];
         const falhas = resultados.filter(r => r.acao === 'erro');
         return jsonResponse({
           success: falhas.length === 0,

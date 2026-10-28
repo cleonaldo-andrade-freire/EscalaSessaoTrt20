@@ -20,7 +20,8 @@ Stack: React 19 + Vite + Tailwind, Supabase (Postgres, Auth, Storage, Edge Funct
 3. **Authentication → Users → Add user** (marque *Auto Confirm User*) com o e-mail do primeiro administrador.
 4. Edite e execute `supabase/sql/03_primeiro_admin.sql` com esse e-mail.
 5. Lembrete automático **20 min antes** de cada sessão (WhatsApp + aviso no app): siga as instruções no topo de `supabase/sql/04_cron_lembretes.sql` (segredo `CRON_SECRET` + Vault). Bancos criados antes do campo de horário: rode também `05_migracao_horario_sessao.sql`.
-6. Google Agenda (opcional): edite e execute `supabase/sql/06_google_agenda.sql` (usa os mesmos segredos do Vault do passo 5) e faça o deploy de `sync-google-calendar`. A conexão com a agenda é feita no app, em **Admin → Google Agenda**.
+6. Bancos criados antes das ausências por período: rode `supabase/sql/07_ausencias_periodo.sql`.
+7. Google Agenda (opcional): edite e execute `supabase/sql/06_google_agenda.sql` (usa os mesmos segredos do Vault do passo 5) e faça o deploy de `sync-google-calendar`. A conexão com a agenda é feita no app, em **Admin → Google Agenda**.
 
 ## Edge Functions
 

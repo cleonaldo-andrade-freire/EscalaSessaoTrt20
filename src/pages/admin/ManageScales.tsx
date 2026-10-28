@@ -251,7 +251,8 @@ const ManageScales = () => {
         const { data, error } = await supabase
           .from('ausencias_programadas')
           .select('membro_id, motivo')
-          .eq('data_especifica', formData.data);
+          .lte('data_inicio', formData.data)
+          .gte('data_fim', formData.data);
         if (error) throw error;
         if (isMounted && data) {
           const map: Record<string, string> = {};
@@ -408,7 +409,8 @@ const ManageScales = () => {
         const { data: ausenciasData, error: ausenciasError } = await supabase
           .from('ausencias_programadas')
           .select('membro_id, motivo')
-          .eq('data_especifica', formData.data)
+          .lte('data_inicio', formData.data)
+          .gte('data_fim', formData.data)
           .in('membro_id', membrosEscalados);
 
         if (ausenciasError) throw ausenciasError;

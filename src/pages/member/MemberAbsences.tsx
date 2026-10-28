@@ -2,7 +2,8 @@ import toast from 'react-hot-toast';
 import React, { useState, useEffect } from 'react';
 import MemberLayout from '../../layouts/MemberLayout';
 import { supabase } from '../../services/supabaseClient';
-import { getAusencias, saveAusenciaPeriodo, deleteAusencias, agruparPeriodos, PeriodoAusencia as Periodo } from '../../services/ausenciasService';
+import { getAusencias, saveAusenciaPeriodo, cancelarAusencia, diasDoPeriodo } from '../../services/ausenciasService';
+import { AusenciaProgramada as Periodo } from '../../types';
 import { CalendarOff, Plus, Trash2, Loader2, AlertCircle, X } from 'lucide-react';
 import CustomDatePicker from '../../components/CustomDatePicker';
 import { getLocalDateStr } from '../../utils/date';
@@ -41,7 +42,7 @@ const MemberAbsences = () => {
       setUserId(user.id);
 
       const todasAusencias = await getAusencias();
-      setPeriodos(agruparPeriodos(todasAusencias.filter(a => a.membroId === user.id)));
+      setPeriodos(todasAusencias.filter(a => a.membroId === user.id));
     } catch (error) {
       console.error('Erro ao carregar ausências:', error);
     } finally {
@@ -60,18 +61,15 @@ const MemberAbsences = () => {
       toast.error('A data final não pode ser anterior à data de início.');
       return;
     }
-    const totalDias = Math.round((new Date(dataFim + 'T12:00:00').getTime() - new Date(dataInicio + 'T12:00:00').getTime()) / 86400000) + 1;
-    if (totalDias > MAX_DIAS_PERIODO) {
+    if (diasDoPeriodo(dataInicio, dataFim) > MAX_DIAS_PERIODO) {
       toast.error(`O período pode ter no máximo ${MAX_DIAS_PERIODO} dias.`);
       return;
     }
 
     try {
       setSaving(true);
-      const gravados = await saveAusenciaPeriodo(userId, dataInicio, dataFim, motivo.trim());
-      if (gravados === 0) toast('Todos os dias do período já estavam registrados.', { icon: 'ℹ️' });
-      else if (gravados < totalDias) toast.success(`Ausência registrada (${gravados} de ${totalDias} dias; os demais já existiam).`);
-      else toast.success('Ausência registrada.');
+      await saveAusenciaPeriodo(userId, dataInicio, dataFim, motivo.trim());
+      toast.success('Ausência registrada.');
 
       // Reset form and reload
       setDataInicio('');
@@ -79,9 +77,9 @@ const MemberAbsences = () => {
       setMotivo('');
       setIsFormOpen(false);
       await loadData();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Erro ao salvar ausência:', error);
-      toast.error('Não foi possível salvar a ausência. Tente novamente.');
+      toast.error(error?.message?.startsWith('Já existe') ? error.message : 'Não foi possível salvar a ausência. Tente novamente.');
     } finally {
       setSaving(false);
     }
@@ -97,8 +95,8 @@ const MemberAbsences = () => {
 
     try {
       setIsDeleting(true);
-      // Dias já passados ficam registrados; cancela de hoje em diante
-      await deleteAusencias(absenceToDelete.dias.filter(d => d.dataEspecifica >= hoje).map(d => d.id));
+      // Dias já passados ficam registrados; cancela de hoje em diante (ver cancelarAusencia)
+      await cancelarAusencia(absenceToDelete);
       await loadData();
     } catch (error) {
       console.error('Erro ao excluir ausência:', error);
@@ -220,11 +218,11 @@ const MemberAbsences = () => {
           <div className="space-y-4">
             <h3 className="font-bold text-gray-800 dark:text-gray-100 px-1">Suas Ausências Programadas</h3>
             {periodos.map(periodo => {
-              const past = isPast(periodo.fim);
-              const umDia = periodo.inicio === periodo.fim;
+              const past = isPast(periodo.dataFim);
+              const umDia = periodo.dataInicio === periodo.dataFim;
               return (
                 <div
-                  key={periodo.chave}
+                  key={periodo.id}
                   className={`bg-white dark:bg-gray-800 p-5 rounded-2xl shadow-sm border ${past ? 'border-gray-100 dark:border-gray-700 opacity-60' : 'border-blue-100'} flex flex-col gap-3 relative overflow-hidden`}
                 >
                   {past && (
@@ -237,10 +235,10 @@ const MemberAbsences = () => {
                   <div className="flex justify-between items-start">
                     <div>
                       <div className="text-sm text-gray-500 dark:text-gray-400 font-medium">
-                        {umDia ? 'Data' : `Período · ${periodo.dias.length} dias`}
+                        {umDia ? 'Data' : `Período · ${diasDoPeriodo(periodo.dataInicio, periodo.dataFim)} dias`}
                       </div>
                       <div className="text-lg font-black text-gray-800 dark:text-gray-100">
-                        {umDia ? formatDate(periodo.inicio) : `${formatDate(periodo.inicio)} a ${formatDate(periodo.fim)}`}
+                        {umDia ? formatDate(periodo.dataInicio) : `${formatDate(periodo.dataInicio)} a ${formatDate(periodo.dataFim)}`}
                       </div>
                     </div>
 
@@ -295,9 +293,9 @@ const MemberAbsences = () => {
                 <div className="mt-0.5 mr-3 text-red-500">
                   <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
                 </div>
-                {absenceToDelete.inicio < hoje
+                {absenceToDelete.dataInicio < hoje
                   ? 'Os dias que já passaram continuam registrados; você voltará a ficar disponível de hoje até o fim do período.'
-                  : absenceToDelete.inicio === absenceToDelete.fim
+                  : absenceToDelete.dataInicio === absenceToDelete.dataFim
                     ? 'Ao cancelar esta ausência, você voltará a ficar disponível para ser escalado nesta data.'
                     : 'Ao cancelar esta ausência, você voltará a ficar disponível para ser escalado em todo o período.'}
               </div>

@@ -64,7 +64,7 @@ supabase/
 Restrições: `UNIQUE (data, tipo_sessao, funcao)`; `checkout_em >= checkin_em`.
 
 ### Demais tabelas
-`ausencias_programadas`, `avisos`, `membro_fcm_tokens`, `sessao_mensagens` (template por `tipo_sessao`).
+`ausencias_programadas` (um registro por período: `data_inicio`..`data_fim`, inclusive), `avisos`, `membro_fcm_tokens`, `sessao_mensagens` (template por `tipo_sessao`).
 
 ## 4. Funções no banco
 
@@ -91,7 +91,7 @@ Edge Functions usam `service_role` e validam o chamador (`_shared/auth.ts`):
 - `create-member`, `delete-member`: somente admin (delete bloqueado se houver escalas ou se for o próprio admin).
 - `update-member`: admin edita tudo; membro edita só o próprio telefone e foto.
 - `send-session-reminders`: somente com o header `x-cron-secret` = `CRON_SECRET`. O job `lembrete-sessoes-20min` (pg_cron, a cada minuto) só chama a função quando há sessão de hoje começando nos próximos 20 min sem lembrete; a função marca `lembrete_enviado_em` antes de enviar (evita duplicidade).
-- `sync-google-calendar`: espelha a escala publicada numa agenda compartilhada do Google (um evento por sessão, id fixo derivado de data + sessão, início = fim = `hora_inicio`). Chamada (a) pelos triggers `trg_google_agenda_*` em `escalas` (`06_google_agenda.sql`, via `pg_net`, header `x-cron-secret`) quando escalas publicadas são inseridas, excluídas ou mudam de data/horário/sessão/função/técnico/permuta/publicação; e (b) pela tela Admin → Google Agenda (somente admin) para salvar/testar/desconectar a conexão e sincronizar um mês. A chave da Service Account e o ID da agenda ficam em `google_agenda_config` (RLS sem policies: só `service_role`).
+- `sync-google-calendar`: espelha a escala publicada numa agenda compartilhada do Google (um evento por sessão, id fixo derivado de data + sessão, início = fim = `hora_inicio`) e as ausências programadas (um evento de dia inteiro por período, sem o motivo, id derivado do id da ausência; triggers `trg_google_agenda_ausencias_*`). Chamada (a) pelos triggers `trg_google_agenda_*` em `escalas` (`06_google_agenda.sql`, via `pg_net`, header `x-cron-secret`) quando escalas publicadas são inseridas, excluídas ou mudam de data/horário/sessão/função/técnico/permuta/publicação; e (b) pela tela Admin → Google Agenda (somente admin) para salvar/testar/desconectar a conexão e sincronizar um mês. A chave da Service Account e o ID da agenda ficam em `google_agenda_config` (RLS sem policies: só `service_role`).
 
 ## 6. Fluxo de Check-in / Check-out
 

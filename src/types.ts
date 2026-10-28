@@ -23,7 +23,7 @@ export interface Membro {
 export interface AusenciaProgramada {
   id: string;
   membroId: string;
-  dataEspecifica: string; // YYYY-MM-DD
+  dataInicio: string; // YYYY-MM-DD
+  dataFim: string;    // YYYY-MM-DD, inclusive (igual ao início em ausência de um dia)
   motivo: string;
-  createdAt?: string; // dias de um mesmo período são gravados juntos (mesmo created_at)
 }

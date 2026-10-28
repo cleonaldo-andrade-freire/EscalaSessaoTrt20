@@ -5,6 +5,8 @@
 -- mudança de data/horário/sessão/função/técnico ou exclusão — o trigger avisa
 -- a Edge Function `sync-google-calendar`, que atualiza um evento por sessão.
 -- Rascunhos, check-in/check-out e lembretes não disparam nada.
+-- Ausências programadas também viram eventos (dia inteiro, um por período,
+-- sem o motivo): cadastrar, encurtar ou cancelar atualiza a agenda.
 --
 -- A conexão (chave da Service Account + ID da agenda) é feita pelo admin no
 -- app, em "Google Agenda", e fica gravada em google_agenda_config. Com a
@@ -31,6 +33,29 @@ CREATE TABLE IF NOT EXISTS public.google_agenda_config (
 ALTER TABLE public.google_agenda_config ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON public.google_agenda_config FROM anon, authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.google_agenda_config TO service_role;
+
+-- Chama a Edge Function. pg_net é assíncrono: a requisição só sai depois do
+-- COMMIT e uma falha aqui nunca impede a alteração de ser salva.
+CREATE OR REPLACE FUNCTION public.notificar_google_agenda(p_body JSONB)
+RETURNS VOID
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  PERFORM net.http_post(
+    url := 'https://<SEU_PROJECT_REF>.supabase.co/functions/v1/sync-google-calendar',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || (SELECT decrypted_secret FROM vault.decrypted_secrets WHERE name = 'service_role_key'),
+      'x-cron-secret', (SELECT decrypted_secret FROM vault.decrypted_secrets WHERE name = 'cron_secret')
+    ),
+    body := p_body
+  );
+EXCEPTION WHEN OTHERS THEN
+  RAISE WARNING 'Google Agenda: não foi possível agendar a sincronização: %', SQLERRM;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.notificar_google_agenda(JSONB) FROM PUBLIC, anon, authenticated;
 
 CREATE OR REPLACE FUNCTION public.sincronizar_google_agenda()
 RETURNS TRIGGER
@@ -82,22 +107,38 @@ BEGIN
     RETURN NULL;
   END IF;
 
-  -- pg_net é assíncrono: a requisição só sai depois do COMMIT e uma falha
-  -- aqui nunca impede a escala de ser salva.
-  BEGIN
-    PERFORM net.http_post(
-      url := 'https://<SEU_PROJECT_REF>.supabase.co/functions/v1/sync-google-calendar',
-      headers := jsonb_build_object(
-        'Content-Type', 'application/json',
-        'Authorization', 'Bearer ' || (SELECT decrypted_secret FROM vault.decrypted_secrets WHERE name = 'service_role_key'),
-        'x-cron-secret', (SELECT decrypted_secret FROM vault.decrypted_secrets WHERE name = 'cron_secret')
-      ),
-      body := jsonb_build_object('sessoes', v_sessoes)
-    );
-  EXCEPTION WHEN OTHERS THEN
-    RAISE WARNING 'Google Agenda: não foi possível agendar a sincronização: %', SQLERRM;
-  END;
+  PERFORM public.notificar_google_agenda(jsonb_build_object('sessoes', v_sessoes));
+  RETURN NULL;
+END;
+$$;
 
+-- Ausências: manda os ids afetados; a função relê cada um (removido = apaga o evento)
+CREATE OR REPLACE FUNCTION public.sincronizar_google_agenda_ausencias()
+RETURNS TRIGGER
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_ids JSONB;
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM public.google_agenda_config WHERE ativo) THEN
+    RETURN NULL;
+  END IF;
+
+  IF TG_OP = 'INSERT' THEN
+    SELECT jsonb_agg(n.id) INTO v_ids FROM novas n;
+  ELSIF TG_OP = 'DELETE' THEN
+    SELECT jsonb_agg(o.id) INTO v_ids FROM antigas o;
+  ELSE
+    -- O motivo não vai para a agenda: só período e técnico importam
+    SELECT jsonb_agg(n.id) INTO v_ids
+      FROM antigas o JOIN novas n ON n.id = o.id
+     WHERE (o.membro_id, o.data_inicio, o.data_fim) IS DISTINCT FROM (n.membro_id, n.data_inicio, n.data_fim);
+  END IF;
+
+  IF v_ids IS NOT NULL THEN
+    PERFORM public.notificar_google_agenda(jsonb_build_object('ausencias', v_ids));
+  END IF;
   RETURN NULL;
 END;
 $$;
@@ -120,5 +161,24 @@ CREATE TRIGGER trg_google_agenda_delete
   AFTER DELETE ON public.escalas
   REFERENCING OLD TABLE AS antigas
   FOR EACH STATEMENT EXECUTE FUNCTION public.sincronizar_google_agenda();
+
+DROP TRIGGER IF EXISTS trg_google_agenda_ausencias_insert ON public.ausencias_programadas;
+DROP TRIGGER IF EXISTS trg_google_agenda_ausencias_update ON public.ausencias_programadas;
+DROP TRIGGER IF EXISTS trg_google_agenda_ausencias_delete ON public.ausencias_programadas;
+
+CREATE TRIGGER trg_google_agenda_ausencias_insert
+  AFTER INSERT ON public.ausencias_programadas
+  REFERENCING NEW TABLE AS novas
+  FOR EACH STATEMENT EXECUTE FUNCTION public.sincronizar_google_agenda_ausencias();
+
+CREATE TRIGGER trg_google_agenda_ausencias_update
+  AFTER UPDATE ON public.ausencias_programadas
+  REFERENCING OLD TABLE AS antigas NEW TABLE AS novas
+  FOR EACH STATEMENT EXECUTE FUNCTION public.sincronizar_google_agenda_ausencias();
+
+CREATE TRIGGER trg_google_agenda_ausencias_delete
+  AFTER DELETE ON public.ausencias_programadas
+  REFERENCING OLD TABLE AS antigas
+  FOR EACH STATEMENT EXECUTE FUNCTION public.sincronizar_google_agenda_ausencias();
 
 -- Conferir as chamadas: SELECT * FROM net._http_response ORDER BY created DESC LIMIT 10;
