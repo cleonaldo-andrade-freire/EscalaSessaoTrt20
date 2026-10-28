@@ -35,6 +35,7 @@ interface EscalaMes {
   tipo_sessao: string;
   funcao: string;
   membro_original_id: string;
+  membro_substituto_id: string | null;
   publicada: boolean;
   compareceu: boolean | null;
   status_substituicao: string;
@@ -73,10 +74,13 @@ interface MonthlyScaleBuilderProps {
   onClose: () => void;
 }
 
-const CAMPOS_ESCALA = 'id, data, hora_inicio, tipo_sessao, funcao, membro_original_id, publicada, compareceu, status_substituicao';
+const CAMPOS_ESCALA = 'id, data, hora_inicio, tipo_sessao, funcao, membro_original_id, membro_substituto_id, publicada, compareceu, status_substituicao';
 
 // Presença registrada ou troca em andamento: não pode ser arrastada
 const travada = (e: EscalaMes) => e.compareceu !== null || e.status_substituicao !== 'Nenhum';
+// Quem atende de fato após permuta aceita (null = o próprio titular)
+const substitutoAceito = (e: EscalaMes) =>
+  e.status_substituicao === 'Substituição Aceita' ? e.membro_substituto_id : null;
 
 const CORES_SESSAO: Record<string, { chip: string; dot: string; tab: string }> = {
   '1ª Turma': { chip: 'bg-blue-900 text-white border-blue-300 dark:bg-blue-800 dark:border-blue-400', dot: 'bg-blue-900 dark:bg-blue-400', tab: 'bg-blue-900 text-white dark:bg-blue-700' },
@@ -510,19 +514,29 @@ Confira os detalhes no app.`;
     </Arrastavel>
   );
 
-  const conteudoMarcacao = (e: EscalaMes, cores: string, esmaecido: boolean) => (
-    <span
-      className={`block rounded-md px-1 sm:px-1.5 py-0.5 sm:py-1 border leading-tight ${cores} ${e.publicada ? '' : 'border-dashed'} ${esmaecido ? 'opacity-30' : ''}`}
-      title={`${e.tipo_sessao} · ${nomeMembro(e.membro_original_id)} · ${e.hora_inicio.slice(0, 5)} · ${e.publicada ? 'publicada' : 'rascunho'}`}
-    >
-      <span className="flex items-center gap-1 text-[9px] sm:text-[10px] font-medium opacity-85">
-        {e.publicada && <Lock className="w-2.5 h-2.5 shrink-0" />}
-        <span className="truncate"><span className="sm:hidden">{SIGLA_SESSAO[e.tipo_sessao] || e.tipo_sessao}</span><span className="hidden sm:inline">{e.tipo_sessao}</span></span>
-        <span className="hidden md:inline ml-auto shrink-0">{e.hora_inicio.slice(0, 5)}</span>
+  // Com permuta aceita mostra quem atende (substituto) e sinaliza a troca
+  const conteudoMarcacao = (e: EscalaMes, cores: string, esmaecido: boolean) => {
+    const substituto = substitutoAceito(e);
+    const quem = substituto
+      ? `${nomeMembro(substituto)} (no lugar de ${nomeMembro(e.membro_original_id)})`
+      : nomeMembro(e.membro_original_id);
+    return (
+      <span
+        className={`block rounded-md px-1 sm:px-1.5 py-0.5 sm:py-1 border leading-tight ${cores} ${e.publicada ? '' : 'border-dashed'} ${esmaecido ? 'opacity-30' : ''}`}
+        title={`${e.tipo_sessao} · ${quem} · ${e.hora_inicio.slice(0, 5)} · ${e.publicada ? 'publicada' : 'rascunho'}`}
+      >
+        <span className="flex items-center gap-1 text-[9px] sm:text-[10px] font-medium opacity-85">
+          {e.publicada && <Lock className="w-2.5 h-2.5 shrink-0" />}
+          <span className="truncate"><span className="sm:hidden">{SIGLA_SESSAO[e.tipo_sessao] || e.tipo_sessao}</span><span className="hidden sm:inline">{e.tipo_sessao}</span></span>
+          <span className="hidden md:inline ml-auto shrink-0">{e.hora_inicio.slice(0, 5)}</span>
+        </span>
+        <span className="flex items-center gap-1 text-[10px] sm:text-[11px] font-bold">
+          <span className="truncate">{primeiroNome(nomeMembro(substituto || e.membro_original_id))}</span>
+          {substituto && <ArrowRightLeft className="w-3 h-3 shrink-0" />}
+        </span>
       </span>
-      <span className="block truncate text-[10px] sm:text-[11px] font-bold">{primeiroNome(nomeMembro(e.membro_original_id))}</span>
-    </span>
-  );
+    );
+  };
 
   const renderCalendario = () => {
     const [ano, m] = mes.split('-').map(Number);
@@ -596,7 +610,7 @@ Confira os detalhes no app.`;
                       <span
                         key={e.id}
                         className={`w-1.5 h-1.5 rounded-full ${(CORES_SESSAO[e.tipo_sessao] || COR_PADRAO).dot}`}
-                        title={`${e.tipo_sessao}: ${nomeMembro(e.membro_original_id)}`}
+                        title={`${e.tipo_sessao}: ${nomeMembro(substitutoAceito(e) || e.membro_original_id)}`}
                       />
                     ))}
                   </span>

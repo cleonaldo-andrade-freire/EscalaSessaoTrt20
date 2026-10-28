@@ -71,7 +71,8 @@ async function sincronizar(db: SupabaseClient, config: Config, sessoes: Sessao[]
     .order('funcao');
   if (escError) throw escError;
 
-  const membroIds = [...new Set((escalas ?? []).map(membroEfetivo).filter(Boolean))];
+  // Quem atende e o titular (para indicar "no lugar de" nas permutas)
+  const membroIds = [...new Set((escalas ?? []).flatMap(e => [membroEfetivo(e), e.membro_original_id]).filter(Boolean))];
   const nomes: Record<string, string> = {};
   if (membroIds.length) {
     const { data: membros } = await db.from('membros').select('id, nome').in('id', membroIds);
@@ -103,7 +104,10 @@ async function sincronizar(db: SupabaseClient, config: Config, sessoes: Sessao[]
       const evento = {
         id,
         summary: `Sessão ${sessao.tipo_sessao} – ${[...new Set(escalados)].join(', ')}`,
-        description: slots.map((s, i) => `${s.funcao}: ${escalados[i]}`).join('\n'),
+        description: slots.map((s, i) => {
+          const trocou = membroEfetivo(s) !== s.membro_original_id;
+          return `${s.funcao}: ${escalados[i]}${trocou ? ` (no lugar de ${nomes[s.membro_original_id] ?? 'titular'})` : ''}`;
+        }).join('\n'),
         start: inicio,
         end: inicio,
         status: 'confirmed',
