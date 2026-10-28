@@ -26,7 +26,7 @@ PWA para organizar a escala dos técnicos que dão **Suporte PJe** às sessões 
 | Módulo | Rotas | Perfil |
 |---|---|---|
 | App do Membro | `/dashboard`, `/escalas-geral`, `/substituicoes`, `/avisos`, `/ausencias`, `/perfil` | Membro |
-| Painel Admin | `/admin/dashboard`, `/admin/escalas`, `/admin/membros`, `/admin/membros/novo`, `/admin/avisos`, `/admin/ausencias`, `/admin/permutas`, `/admin/relatorio-faltas`, `/admin/relatorio-presenca` | Admin |
+| Painel Admin | `/admin/dashboard`, `/admin/escalas`, `/admin/membros`, `/admin/membros/novo`, `/admin/avisos`, `/admin/ausencias`, `/admin/permutas`, `/admin/relatorio-presenca` | Admin |
 | Autenticação | `/login`, `/update-password` | Público |
 
 ## 4. Funcionalidades

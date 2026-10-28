@@ -18,7 +18,7 @@ src/
 ├── constants.ts            # Sessões, funções, status, template padrão
 ├── types.ts
 ├── pages/admin/            # Dashboard, ManageScales, MembersList, AddMember,
-│                           # ManageNotices, ManageAbsences, ManageSwaps, AdminMissedScales
+│                           # ManageNotices, ManageAbsences, ManageSwaps
 ├── pages/member/           # MemberDashboard, MemberGeneralSchedule, MemberSwaps,
 │                           # MemberNotices, MemberAbsences, MemberProfile
 ├── layouts/                # AdminLayout (sidebar), MemberLayout (tab bar)

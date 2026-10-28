@@ -2,10 +2,11 @@ import React, { useState, useEffect, useMemo } from 'react';
 import toast from 'react-hot-toast';
 import { supabase } from '../../services/supabaseClient';
 import AdminLayout from '../../layouts/AdminLayout';
-import { ClipboardList, Download, Calendar, User, Clock } from 'lucide-react';
+import { ClipboardList, Download, Calendar, User, Clock, LogIn, LogOut, UserX, Undo2, X } from 'lucide-react';
 import CustomDatePicker from '../../components/CustomDatePicker';
 import { SESSOES_DISPONIVEIS } from '../../constants';
-import { getLocalDateStr, formatHora, formatDuracao } from '../../utils/date';
+import { getLocalDateStr, formatHora, formatDuracao, getHoraAtual, combinarDataHora } from '../../utils/date';
+import { registrarCheckin, registrarCheckout } from '../../services/presencaService';
 
 type Linha = {
   id: string;
@@ -30,6 +31,16 @@ const minutosEntre = (inicio: string | null, fim: string | null) =>
 const formatHoras = (minutos: number) =>
   `${Math.floor(minutos / 60)}h${String(minutos % 60).padStart(2, '0')}`;
 
+// Lançamento manual do admin a partir de uma linha do relatório
+type Acao = { tipo: 'checkin' | 'checkout' | 'falta' | 'desfazer'; linha: Linha };
+
+const TITULO_ACAO: Record<Acao['tipo'], string> = {
+  checkin: 'Registrar check-in',
+  checkout: 'Registrar check-out',
+  falta: 'Marcar falta',
+  desfazer: 'Desfazer falta',
+};
+
 const AttendanceReport = () => {
   const hoje = new Date();
   const [dataInicio, setDataInicio] = useState(getLocalDateStr(new Date(hoje.getFullYear(), hoje.getMonth(), 1)));
@@ -41,6 +52,10 @@ const AttendanceReport = () => {
   const [linhas, setLinhas] = useState<Linha[]>([]);
   const [membros, setMembros] = useState<{ id: string; nome: string }[]>([]);
   const [loading, setLoading] = useState(true);
+
+  const [acao, setAcao] = useState<Acao | null>(null);
+  const [acaoHora, setAcaoHora] = useState('');
+  const [salvandoAcao, setSalvandoAcao] = useState(false);
 
   useEffect(() => {
     supabase.from('membros').select('id, nome').order('nome').then(({ data }) => setMembros(data || []));
@@ -164,6 +179,46 @@ const AttendanceReport = () => {
     a.click();
     URL.revokeObjectURL(url);
   };
+
+  const abrirAcao = (tipo: Acao['tipo'], linha: Linha) => {
+    // Check-in sugere o início da sessão; check-out, a hora atual (se for hoje)
+    setAcaoHora(tipo === 'checkin' ? linha.hora : linha.data === getLocalDateStr() ? getHoraAtual() : '');
+    setAcao({ tipo, linha });
+  };
+
+  const confirmarAcao = async () => {
+    if (!acao) return;
+    const { tipo, linha } = acao;
+    if ((tipo === 'checkin' || tipo === 'checkout') && !acaoHora) {
+      toast.error('Informe o horário.');
+      return;
+    }
+    setSalvandoAcao(true);
+    try {
+      if (tipo === 'checkin') {
+        await registrarCheckin(linha.id, combinarDataHora(linha.data, acaoHora));
+      } else if (tipo === 'checkout') {
+        await registrarCheckout(linha.id, combinarDataHora(linha.data, acaoHora));
+      } else {
+        // Marcar/desfazer falta também limpa os horários de check-in/check-out
+        const { error } = await supabase
+          .from('escalas')
+          .update({ compareceu: tipo === 'falta' ? false : null, checkin_em: null, checkin_por: null, checkout_em: null, checkout_por: null })
+          .eq('id', linha.id);
+        if (error) throw error;
+      }
+      toast.success({ checkin: 'Check-in registrado!', checkout: 'Check-out registrado!', falta: 'Falta registrada.', desfazer: 'Falta desfeita.' }[tipo]);
+      setAcao(null);
+      fetchRelatorio();
+    } catch (err: any) {
+      console.error('Erro ao registrar presença:', err);
+      toast.error(err?.message || 'Erro ao registrar presença.');
+    } finally {
+      setSalvandoAcao(false);
+    }
+  };
+
+  const botaoAcao = 'inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-semibold border transition-colors';
 
   const statusBadge = (status: Linha['status']) => {
     if (status === 'Presente') return 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300';
@@ -313,7 +368,7 @@ const AttendanceReport = () => {
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse min-w-[900px]">
+            <table className="w-full text-left border-collapse min-w-[1100px]">
               <thead>
                 <tr className="border-b border-gray-100 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400 uppercase">
                   <th className="px-6 py-3 font-medium">Data / Sessão</th>
@@ -322,6 +377,7 @@ const AttendanceReport = () => {
                   <th className="px-6 py-3 font-medium">Check-in</th>
                   <th className="px-6 py-3 font-medium">Check-out</th>
                   <th className="px-6 py-3 font-medium">Duração</th>
+                  <th className="px-6 py-3 font-medium text-right">Ações</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
@@ -367,6 +423,29 @@ const AttendanceReport = () => {
                         <span className="inline-flex items-center gap-1"><Clock className="w-3.5 h-3.5 text-gray-400" />{formatDuracao(l.checkinEm, l.checkoutEm)}</span>
                       ) : '—'}
                     </td>
+                    <td className="px-6 py-3">
+                      <div className="flex justify-end gap-1.5">
+                        {l.status !== 'Presente' && (
+                          <button onClick={() => abrirAcao('checkin', l)} className={`${botaoAcao} border-green-200 text-green-700 hover:bg-green-50 dark:border-green-800 dark:text-green-400 dark:hover:bg-green-900/30`}>
+                            <LogIn className="w-3.5 h-3.5" /> Check-in
+                          </button>
+                        )}
+                        {l.status === 'Presente' && !l.checkoutEm && (
+                          <button onClick={() => abrirAcao('checkout', l)} className={`${botaoAcao} border-blue-200 text-blue-700 hover:bg-blue-50 dark:border-blue-800 dark:text-blue-400 dark:hover:bg-blue-900/30`}>
+                            <LogOut className="w-3.5 h-3.5" /> Check-out
+                          </button>
+                        )}
+                        {l.status !== 'Falta' ? (
+                          <button onClick={() => abrirAcao('falta', l)} className={`${botaoAcao} border-red-200 text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-900/30`}>
+                            <UserX className="w-3.5 h-3.5" /> Falta
+                          </button>
+                        ) : (
+                          <button onClick={() => abrirAcao('desfazer', l)} className={`${botaoAcao} border-gray-200 text-gray-600 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700`}>
+                            <Undo2 className="w-3.5 h-3.5" /> Desfazer falta
+                          </button>
+                        )}
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -374,6 +453,54 @@ const AttendanceReport = () => {
           </div>
         )}
       </div>
+
+      {/* Lançamento manual de presença/falta */}
+      {acao && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-50 backdrop-blur-sm">
+          <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
+            <div className="flex justify-between items-center p-5 border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50">
+              <h3 className="text-lg font-bold text-gray-900 dark:text-gray-50">{TITULO_ACAO[acao.tipo]}</h3>
+              <button onClick={() => setAcao(null)} className="text-gray-400 hover:text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-800 p-1 rounded-lg border border-gray-200 dark:border-gray-700">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              <p className="text-sm text-gray-700 dark:text-gray-200">
+                <strong>{acao.linha.membroNome}</strong> · {acao.linha.sessao} · {formatData(acao.linha.data)}{acao.linha.hora && ` às ${acao.linha.hora}`}
+              </p>
+              {(acao.tipo === 'checkin' || acao.tipo === 'checkout') ? (
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 dark:text-gray-200 uppercase mb-1">Horário</label>
+                  <input
+                    type="time"
+                    value={acaoHora}
+                    onChange={e => setAcaoHora(e.target.value)}
+                    className="w-full bg-gray-50 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-700 text-gray-900 dark:text-gray-50 text-sm rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 block p-2.5"
+                  />
+                </div>
+              ) : (
+                <p className="text-sm text-gray-500 dark:text-gray-400">
+                  {acao.tipo === 'falta'
+                    ? 'A sessão ficará registrada como falta e os horários de check-in/check-out, se houver, serão apagados.'
+                    : 'A sessão voltará a ficar pendente, sem presença nem falta.'}
+                </p>
+              )}
+            </div>
+            <div className="flex justify-end gap-3 p-5 border-t border-gray-100 dark:border-gray-700">
+              <button onClick={() => setAcao(null)} className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 rounded-xl border border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700">
+                Cancelar
+              </button>
+              <button
+                onClick={confirmarAcao}
+                disabled={salvandoAcao}
+                className={`px-4 py-2 text-sm font-medium text-white rounded-xl shadow-sm disabled:opacity-50 ${acao.tipo === 'falta' ? 'bg-red-600 hover:bg-red-700' : 'bg-blue-600 hover:bg-blue-700'}`}
+              >
+                {salvandoAcao ? 'Salvando...' : 'Confirmar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </AdminLayout>
   );
 };
